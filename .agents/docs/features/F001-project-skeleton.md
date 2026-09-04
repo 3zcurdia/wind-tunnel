@@ -9,7 +9,7 @@
 | Size | XS |
 | Skill fit | `glue` |
 | Depends on | — (first feature) |
-| Status | `[ ]` todo |
+| Status | `[x]` done |
 
 ## Goal
 
@@ -78,12 +78,12 @@ wasm/src/.gitkeep                           (new)
 
 ## Acceptance criteria
 
-- [ ] `npm run dev` shows: dark shell, header "Wind Tunnel", left rail "Controls",
+- [x] `npm run dev` shows: dark shell, header "Wind Tunnel", left rail "Controls",
       main "Viewport" box, bottom "Stats" bar.
-- [ ] All §2 `ARCHITECTURE.md` directories exist (empty ones via `.gitkeep`).
-- [ ] `npm run lint` and `npm run build` pass with zero errors/warnings.
-- [ ] No `"use client"` directives added by this feature.
-- [ ] `.gitignore` ignores `wasm/target/` and `src/wasm/`.
+- [x] All §2 `ARCHITECTURE.md` directories exist (empty ones via `.gitkeep`).
+- [x] `npm run lint` and `npm run build` pass with zero errors/warnings.
+- [x] No `"use client"` directives added by this feature.
+- [x] `.gitignore` ignores `wasm/target/` and `src/wasm/`.
 
 ## Test plan
 
