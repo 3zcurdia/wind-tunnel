@@ -1,8 +1,9 @@
 import { Panel } from "@/components/ui/Panel";
+import ViewportMount from "@/components/viewport/ViewportMount";
 
 export default function Home() {
   return (
-    <div className="flex min-h-screen flex-col">
+    <div className="flex h-screen flex-col overflow-hidden">
       <header className="flex h-12 shrink-0 items-center justify-between border-b border-neutral-800 px-4">
         <h1 className="text-sm font-semibold tracking-wide">Wind Tunnel</h1>
         <span className="rounded-full border border-neutral-700 px-2 py-0.5 text-[10px] uppercase tracking-wider text-neutral-400">
@@ -15,14 +16,9 @@ export default function Home() {
             Upload + tuning controls wire in F004 / F018.
           </p>
         </Panel>
-        <Panel
-          title="Viewport"
-          className="flex min-h-[60vh] flex-1 items-center justify-center"
-        >
-          <p className="text-xs text-neutral-500">
-            3D scene mounts here in F002.
-          </p>
-        </Panel>
+        <div className="min-h-[70vh] flex-1 overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900">
+          <ViewportMount />
+        </div>
       </main>
       <footer className="h-28 shrink-0 border-t border-neutral-800 p-4">
         <Panel title="Stats" className="h-full">

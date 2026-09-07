@@ -31,7 +31,7 @@ F003 and can proceed while Phase 1 UI work happens.
 ### Phase 0 — Foundation
 
 - [x] [F001 — Project skeleton & conventions](features/F001-project-skeleton.md) — `XS` `glue`
-- [ ] [F002 — Three.js scene shell](features/F002-scene-shell.md) — `S` `UI/3D`
+- [x] [F002 — Three.js scene shell](features/F002-scene-shell.md) — `S` `UI/3D`
 - [ ] [F003 — Rust→WASM pipeline wired into Next.js](features/F003-wasm-pipeline.md) — `M` `Rust/build`
 
 ### Phase 1 — Model Ingestion

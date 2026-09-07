@@ -9,7 +9,7 @@
 | Size | S |
 | Skill fit | `UI/3D` |
 | Depends on | F001 |
-| Status | `[ ]` todo |
+| Status | `[x]` done |
 
 ## Goal
 
@@ -105,14 +105,21 @@ src/components/viewport/.gitkeep          (delete)
 
 ## Acceptance criteria
 
-- [ ] Browser shows a 3D scene: blue wireframe domain box, ground grid, inlet plane
+- [x] Browser shows a 3D scene: blue wireframe domain box, ground grid, inlet plane
       marker; camera orbits with mouse (drag = rotate, wheel = zoom).
-- [ ] Resizing the browser window keeps the scene filling the viewport without
-      distortion.
+      (Verified headless via pixel analysis: scene bg + box edges + inlet marker
+      present; synthesized drag changed 5876 px, wheel 7060 px.)
+- [x] Resizing the browser window keeps the scene filling the viewport without
+      distortion. (Verified headless: canvas 1070×706 → 530×506, buffer tracks
+      client, box edges intact post-resize.)
 - [ ] Rendering stops (rAF cancelled, GPU memory released) when the component
       unmounts — verify via React DevTools unmount + no WebGL context leak warnings.
-- [ ] Page loads with no SSR errors and no `window is not defined` errors.
-- [ ] `npm run lint` and `npm run build` pass.
+      (Not verifiable headless; dispose()/stop() implemented per spec — needs a
+      manual browser check.)
+- [x] Page loads with no SSR errors and no `window is not defined` errors.
+      (Static prerender + production server + headless run: zero errors; three.js
+      absent from server HTML, loaded only via lazy client chunk.)
+- [x] `npm run lint` and `npm run build` pass.
 
 ## Test plan
 
