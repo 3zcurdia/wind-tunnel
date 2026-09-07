@@ -28,6 +28,10 @@ export interface ModelContextValue {
   reading: boolean;
   setFile(f: File): void;
   clear(): void;
+  /** F005 pipeline: record triangle/vertex counts after a successful parse. */
+  setMeta(meta: ModelMeta | undefined): void;
+  /** F005 pipeline: surface a parse/normalize failure as the panel error. */
+  setParseError(message: string): void;
 }
 
 const ModelContext = createContext<ModelContextValue | null>(null);
@@ -91,9 +95,29 @@ export function ModelProvider({ children }: { children: ReactNode }) {
     setReading(false);
   }, []);
 
+  const setMetaValue = useCallback((m: ModelMeta | undefined) => {
+    setMeta(m);
+  }, []);
+
+  const setParseError = useCallback((message: string) => {
+    setMeta(undefined);
+    setStatus("invalid");
+    setError(message);
+  }, []);
+
   const value = useMemo<ModelContextValue>(
-    () => ({ file, status, error, meta, reading, setFile, clear }),
-    [file, status, error, meta, reading, setFile, clear],
+    () => ({
+      file,
+      status,
+      error,
+      meta,
+      reading,
+      setFile,
+      clear,
+      setMeta: setMetaValue,
+      setParseError,
+    }),
+    [file, status, error, meta, reading, setFile, clear, setMetaValue, setParseError],
   );
 
   return (

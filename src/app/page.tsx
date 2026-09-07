@@ -1,12 +1,21 @@
+"use client";
+
 import { UploadPanel } from "@/components/controls/UploadPanel";
 import { Panel } from "@/components/ui/Panel";
 import { WasmProbe } from "@/components/ui/WasmProbe";
 import ViewportMount from "@/components/viewport/ViewportMount";
+import { useModelPipeline } from "@/lib/hooks/useModelPipeline";
 import { ModelProvider } from "@/lib/sim/ModelContext";
+
+function ModelPipelineHost() {
+  useModelPipeline();
+  return null;
+}
 
 export default function Home() {
   return (
     <ModelProvider>
+      <ModelPipelineHost />
       <div className="flex h-screen flex-col overflow-hidden">
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-neutral-800 px-4">
           <h1 className="text-sm font-semibold tracking-wide">Wind Tunnel</h1>

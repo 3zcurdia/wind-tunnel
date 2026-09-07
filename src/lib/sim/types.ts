@@ -11,6 +11,28 @@ export interface LoadedFile {
 
 export const MAX_MODEL_FILE_BYTES = 50 * 1024 * 1024;
 
+/** Lattice domain size in cells (F005 constants; F021 makes these runtime). */
+export const DOMAIN = { nx: 128, ny: 48, nz: 48 } as const;
+
+/** 3-component vector tuple used for lattice-space bounds/offsets. */
+export type Vec3 = readonly [number, number, number];
+
+/** three.js loader failed to parse the file bytes. */
+export class ModelParseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ModelParseError";
+  }
+}
+
+/** Geometry is degenerate (e.g. zero-size bounding box) and cannot be placed. */
+export class DegenerateModelError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DegenerateModelError";
+  }
+}
+
 type ValidateOk = { ok: true; format: ModelFormat };
 type ValidateErr = { ok: false; reason: string };
 

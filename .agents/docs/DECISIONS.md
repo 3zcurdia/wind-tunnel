@@ -68,3 +68,46 @@ stay consistent with `ARCHITECTURE.md`.
 
 4. **Removed `src/components/controls/.gitkeep`** per the F003 note above —
    the directory now holds `UploadPanel.tsx`.
+
+## 2026-09-07 — F005 (Parse, display & normalize model)
+
+1. **`ModelContext` gained `setMeta`/`setParseError` (file list omission).** The
+   spec's pipeline (§4) must "set `meta { triangles, vertices }` in
+   ModelContext" and "on parse error → set context error state", but the Files
+   list omits `src/lib/sim/ModelContext.tsx` and F004's context exposes no
+   setters. Smallest change consistent with ARCHITECTURE.md (context owns
+   UI-agnostic upload state): added two stable setters — `setMeta(m)` (counts
+   only, status untouched) and `setParseError(msg)` (status `"invalid"` + error,
+   keeps `file` so the failing bytes stay inspectable, clears `meta`). No
+   existing contract removed; `useModel()` shape is a superset, same pattern as
+   F004's `reading` note above. Parse errors therefore reuse UploadPanel's
+   existing invalid-state rendering, and the scene keeps the previous model
+   (pipeline never calls `showModel` on failure).
+
+2. **`page.tsx` became a Client Component to host the pipeline hook.** §4 + file
+   list say "run pipeline hook" in `page.tsx`, but the page was a Server
+   Component and hooks (plus `useModel`, which throws outside the provider)
+   cannot run there or above `ModelProvider`. Smallest compliant change within
+   the listed files: `"use client"` on `page.tsx` plus a null-rendering
+   `ModelPipelineHost` child inside `<ModelProvider>` that calls
+   `useModelPipeline()`. No new files; `ViewportMount`'s `ssr: false` dynamic
+   import still sits under a Client Component, per the bundled Next guide.
+
+3. **`UploadPanel.tsx` needed no edits.** F004 already renders `meta`
+   counts ("—" when absent) and the `status === "invalid"` error state, which
+   is exactly what §4/§5 of this spec asks the panel to show. File left
+   untouched.
+
+4. **Test-plan scale number is off for a 2-longest-side input.** The optional
+   unit suggests a "synthetic 2×1×1 box → assert scale = 32", but the specified
+   algorithm (longest side → 0.25·nx = 32 cells) gives scale = 32/2 = **16** for
+   that input; scale = 32 holds for a unit (1×1×1) box. Algorithm implemented
+   as specified; harness-verified: `BoxGeometry(2,1,1)` → scale 16,
+   bbox center (44.8, 24, 24), longest side 32; `BoxGeometry(1,1,1)` →
+   scale 32. Spec text left untouched (outside this feature's file list).
+
+5. **`showModel` clones before the lattice→world transform.** The caller's
+   domain-space geometry must survive for F006 voxelization, so `showModel`
+   clones the input, maps the clone with `(lattice − (64,24,24)) · 0.1`, and
+   leaves the passed geometry untouched (verified: input bbox unchanged after
+   normalize + world mapping).

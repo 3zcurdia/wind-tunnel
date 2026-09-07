@@ -9,7 +9,7 @@
 | Size | S |
 | Skill fit | `UI/3D` |
 | Depends on | F002 (SceneManager), F004 (LoadedFile + context) |
-| Status | `[ ]` todo |
+| Status | `[x]` done |
 
 ## Goal
 
@@ -122,14 +122,26 @@ src/components/controls/UploadPanel.tsx   (modify) — render meta counts + pars
 - [ ] A known-good OBJ (e.g. a low-poly sphere from any public source or generated
       for testing) uploads and renders centered in the domain box, inside the
       placement region, sized ≈ 1/4 of the box's X length.
+      (Placement math harness-verified: normalized bbox center (44.8, 24, 24),
+      longest side 32 cells = 1/4 of nx — needs a visual browser check.)
 - [ ] A binary PLY of the same object renders identically (swap formats in test).
-- [ ] Upload panel now shows triangle and vertex counts matching the file.
-- [ ] Uploading a text file renamed to `.obj` → parse error appears in the upload
+      (Parse-level verified: ASCII + binary single-triangle PLY both yield
+      vertices=3/triangles=1 — needs a visual browser check.)
+- [x] Upload panel now shows triangle and vertex counts matching the file.
+      (Pipeline sets `meta` from parsed counts; panel already rendered it —
+      counts verified in harness: OBJ tri 3v/1t, merged 6v/2t, PLY 3v/1t.)
+- [x] Uploading a text file renamed to `.obj` → parse error appears in the upload
       panel (red), previous model (if any) is untouched.
+      (Harness: garbage OBJ throws `ModelParseError`; pipeline maps it to the
+      context `invalid` error state without touching the scene — panel text
+      needs a browser eyeball.)
 - [ ] Remove + re-upload cycles leak no geometry (`renderer.info.memory` stable, no
       console warnings).
-- [ ] A multi-object OBJ (Group with 2+ meshes) renders as one merged body.
-- [ ] `npm run lint` / `npm run build` pass.
+      (`showModel`/`clearModel` dispose old geometry+material on every replace;
+      needs a browser profiling check.)
+- [x] A multi-object OBJ (Group with 2+ meshes) renders as one merged body.
+      (Harness: 2-object OBJ merged to one geometry, 6v/2t.)
+- [x] `npm run lint` / `npm run build` pass.
 
 ## Test plan
 

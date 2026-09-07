@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import type { SceneManager } from "./SceneManager";
+import { setSceneManager } from "./viewportBridge";
 
 export default function Viewport() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -19,11 +20,13 @@ export default function Viewport() {
       if (disposed) return;
       const manager = new SceneManagerCtor(canvas);
       managerRef.current = manager;
+      setSceneManager(manager);
       manager.start();
       cleanup = () => {
         manager.stop();
         manager.dispose();
         if (managerRef.current === manager) managerRef.current = null;
+        setSceneManager(null);
       };
     })();
 

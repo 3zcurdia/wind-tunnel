@@ -1,5 +1,6 @@
 import {
   BoxGeometry,
+  BufferGeometry,
   Color,
   DirectionalLight,
   EdgesGeometry,
@@ -9,18 +10,30 @@ import {
   HemisphereLight,
   LineBasicMaterial,
   LineSegments,
+  Matrix4,
   Mesh,
   MeshBasicMaterial,
+  MeshStandardMaterial,
   PerspectiveCamera,
   Scene,
   SRGBColorSpace,
+  Vector3,
   WebGLRenderer,
 } from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { DOMAIN } from "@/lib/sim/types";
 
 export type DomainLayers = "particles" | "meshModel" | "smoke" | "debug";
 
 const DOMAIN_SIZE = { x: 12.8, y: 4.8, z: 4.8 } as const;
+
+/** Domain (lattice cells) → world mapping: 1 cell = 0.1 world units. */
+const LATTICE_TO_WORLD = 0.1;
+const WORLD_OFFSET = {
+  x: (-DOMAIN.nx / 2) * LATTICE_TO_WORLD,
+  y: (-DOMAIN.ny / 2) * LATTICE_TO_WORLD,
+  z: (-DOMAIN.nz / 2) * LATTICE_TO_WORLD,
+} as const;
 
 type FrameCallback = (dtSeconds: number) => void;
 
@@ -36,6 +49,7 @@ export class SceneManager {
   private rafHandle: number | null = null;
   private lastFrameTime: number = 0;
   private disposed = false;
+  private modelMesh: Mesh | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvasParent = canvas.parentElement ?? document.body;
@@ -146,6 +160,60 @@ export class SceneManager {
     const group = this.layers.get(name);
     if (!group) throw new Error(`Unknown layer: ${name}`);
     return group;
+  }
+
+  /**
+   * Show a domain-space (lattice cells) model in the viewport (F005).
+   * The input geometry is cloned and mapped to world space
+   * (world = (lattice − domainCenter) · 0.1); the caller's copy is untouched
+   * so it stays usable for voxelization. Replaces any previous model cleanly.
+   */
+  showModel(geometry: BufferGeometry): void {
+    this.clearModel();
+    const world = geometry.clone();
+    if (world.getAttribute("normal") === undefined) {
+      world.computeVertexNormals();
+    }
+    const matrix = new Matrix4().makeScale(
+      LATTICE_TO_WORLD,
+      LATTICE_TO_WORLD,
+      LATTICE_TO_WORLD,
+    );
+    matrix.setPosition(WORLD_OFFSET.x, WORLD_OFFSET.y, WORLD_OFFSET.z);
+    world.applyMatrix4(matrix);
+    const material = new MeshStandardMaterial({
+      color: "#9ca3af",
+      metalness: 0.1,
+      roughness: 0.65,
+      flatShading: true,
+    });
+    const mesh = new Mesh(world, material);
+    this.modelMesh = mesh;
+    this.getLayer("meshModel").add(mesh);
+
+    world.computeBoundingBox();
+    const center = world.boundingBox?.getCenter(new Vector3());
+    if (center) {
+      const offset = this.camera.position.clone().sub(this.controls.target);
+      this.controls.target.copy(center);
+      this.camera.position.copy(center).add(offset);
+      this.controls.update();
+    }
+  }
+
+  /** Remove the current model, if any, and release its GPU resources. */
+  clearModel(): void {
+    const mesh = this.modelMesh;
+    this.modelMesh = null;
+    if (!mesh) return;
+    mesh.removeFromParent();
+    mesh.geometry.dispose();
+    const material = mesh.material;
+    if (Array.isArray(material)) {
+      for (const entry of material) entry.dispose();
+    } else {
+      material.dispose();
+    }
   }
 
   dispose(): void {
