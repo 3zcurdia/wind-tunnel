@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "wasm:build": "wasm-pack build wasm --target web --out-dir ../src/wasm"
   },
   "dependencies": {
     "next": "16.3.4",

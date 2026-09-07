@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Generated wasm-bindgen output (F003) — produced by `npm run wasm:build`.
+    "src/wasm/**",
   ]),
 ]);
 

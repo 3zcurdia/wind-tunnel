@@ -1,4 +1,5 @@
 import { Panel } from "@/components/ui/Panel";
+import { WasmProbe } from "@/components/ui/WasmProbe";
 import ViewportMount from "@/components/viewport/ViewportMount";
 
 export default function Home() {
@@ -12,9 +13,12 @@ export default function Home() {
       </header>
       <main className="flex flex-1 gap-4 p-4">
         <Panel title="Controls" className="w-80 shrink-0">
-          <p className="text-xs text-neutral-500">
-            Upload + tuning controls wire in F004 / F018.
-          </p>
+          <div className="space-y-4">
+            <p className="text-xs text-neutral-500">
+              Upload + tuning controls wire in F004 / F018.
+            </p>
+            <WasmProbe />
+          </div>
         </Panel>
         <div className="min-h-[70vh] flex-1 overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900">
           <ViewportMount />

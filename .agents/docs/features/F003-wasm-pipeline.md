@@ -9,7 +9,7 @@
 | Size | M |
 | Skill fit | `Rust/build` |
 | Depends on | F001 |
-| Status | `[ ]` todo |
+| Status | `[x]` done |
 
 ## Goal
 
@@ -115,15 +115,25 @@ src/wasm/**                        (generated, gitignored)
 
 ## Acceptance criteria
 
-- [ ] `npm run wasm:build` produces `src/wasm/` artifacts from a clean clone (after
+- [x] `npm run wasm:build` produces `src/wasm/` artifacts from a clean clone (after
       installing wasm-pack), without warnings that would break release.
-- [ ] Browser: clicking "Test engine" shows `pong` in green.
-- [ ] Breaking the artifact deliberately (rename) makes the button show the
+      (Verified: `rm -rf src/wasm wasm/target` → clean regeneration in 4.2 s; only
+      informational notes from wasm-pack about optional Cargo.toml fields.)
+- [x] Browser: clicking "Test engine" shows `pong` in green.
+      (Verified headless via production server: green `pong` rendered after click.)
+- [x] Breaking the artifact deliberately (rename) makes the button show the
       `WasmLoadError` message in red, and the app does not crash.
-- [ ] `npm run build` succeeds including the WASM asset in the client bundle.
-- [ ] `cargo test` passes inside `wasm/` (trivial — proves toolchain).
-- [ ] Loader is idempotent: two rapid clicks produce one load (singleton verified via
+      (Verified headless: renamed the served `.wasm` asset → exact spec message in
+      red, zero page errors, page still interactive; retry after restore succeeded.)
+- [x] `npm run build` succeeds including the WASM asset in the client bundle.
+      (Turbopack emits `.next/static/media/windtunnel_bg.*.wasm`, referenced from
+      the lazy client chunk; no fallback loading path needed — see DECISIONS.md.)
+- [x] `cargo test` passes inside `wasm/` (trivial — proves toolchain).
+      (0 tests, exit 0, rustc/cargo 1.98.1.)
+- [x] Loader is idempotent: two rapid clicks produce one load (singleton verified via
       console counter in dev only — remove counter after verifying).
+      (Headless: two synchronous clicks → one `[wasm] fresh load` console line;
+      counter removed afterwards and build re-verified clean.)
 
 ## Test plan
 

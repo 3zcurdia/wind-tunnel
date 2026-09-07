@@ -35,7 +35,7 @@ Prerequisites:
 - **Rust toolchain** (only needed to build the simulation engine):
   ```bash
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-  cargo install wasm-pack
+  cargo install wasm-pack        # or: brew install wasm-pack (macOS)
   ```
 
 Run it:
