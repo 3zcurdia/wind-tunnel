@@ -143,3 +143,56 @@ stay consistent with `ARCHITECTURE.md`.
    same sphere minus the top cap → **surface_mode = true, 2580 shell cells**,
    no hang. Node smoke test against the real `wasm-pack` artifact reproduced
    the box count (125) through the raw `occupancy_ptr` view.
+
+## 2026-09-07 — F007 (LBM D3Q19 core step)
+
+1. **Temporary obstacle model: solids rest at u=0 + streaming skips solid
+   destinations (no bounce-back).** The spec asks for periodic edges plus
+   "solid cells copied through untouched (`f_next = f` at solids)" and asserts
+   the wake test "uses periodic wrap + solid cells treated as copy-through".
+   Taken literally — solids initialised identically to fluid (uniform inlet
+   equilibrium) and streamed like fluid — uniform flow is an exact fixed point
+   (collide maps `f_eq → f_eq`, pull-streaming a uniform plane returns the
+   same plane), so no wake can ever form and `gailei_insertion_creates_flow`
+   (downstream < 0.05 with `u_inlet = 0.08`) is unachievable. Smallest change
+   meeting the acceptance criteria without stealing F008's bounce-back:
+   `reset_flow` fills fluid cells with equilibrium at `(1, u_inlet, 0, 0)` and
+   solid cells with equilibrium at rest `(1, 0, 0, 0)`; `set_mesh`/`clear_mesh`
+   retune only the changed cells the same way (rest of the field untouched);
+   the streamer skips solid destinations (they stay frozen) while fluid cells
+   pull rest-state populations out of solid neighbours. No reflection, no
+   inlet/outlet/walls — all of that stays F008's work. Documented in
+   `wasm/src/lbm.rs` module docs; F008's "skip writing into solid cells" envis
+   aged fix is therefore already half-satisfied (the skip), leaving bounce-back
+   + BC families to that feature.
+2. **Upstream assertion read as max, not mean (periodic momentum drain).**
+   With periodic edges nothing drives the flow, so obstacle drag drains total
+   momentum: measured on the 32×16×16 + 4³-block fixture (`u_inlet = 0.08`,
+   `τ = 0.56`) upstream-slab mean 0.0629 → 0.0600 → 0.0547 → 0.0488 → 0.0462
+   at 100/200/300/400/500 steps, while downstream-slab mean stays
+   0.0350 → 0.0264 → 0.0238 → 0.0235 → 0.0223 (wake sustained) and upstream
+   max stays 0.0751 → 0.0716 → 0.0644 → 0.0575 → 0.0553. The spec's "upstream
+   shows u_x > 0.05 (blockage)" is satisfied as an existence check
+   (`up_max > 0.05`) with the downstream wake on the mean (`down_mean < 0.05`)
+   at the specified 500 steps; a mean-vs-mean reading becomes impossible past
+   ~350 steps under periodic BC. Test comment records the sweep.
+3. **Perf: 35.5 ms/step at 128×48×48, exceeding the ≤ 4 ms budget — noted,
+   no threads added.** `cargo test --release bench_note -- --nocapture`
+   (Apple M4 Pro, arm64, rustc 1.98.1, `opt-level = 3 + lto`): **35.529
+   ms/step** (5 measured steps after 1 warmup, all-fluid, `u = 0.05`,
+   `τ = 0.56`). Cause is the straightforward two-pass safe-Rust kernel
+   (per-cell `f64` BGK + periodic pull-stream with bounds-checked indexing,
+   ~90 MB memory traffic/step for the two 22 MB SoA buffers) with no
+   `unsafe`, no tiling, no threading — exactly what the spec anticipates
+   ("if exceeding, note actual numbers … do not add threads"). Mitigation
+   belongs to F010 (adaptive steps-per-frame) + F021 (quality presets), not
+   this feature.
+4. **New ABI surface not yet in ARCHITECTURE.md §5 — left for F009.**
+   ARCH §5 already lists `step`/`reset_flow` but not the F007 diagnostics
+   `steps_done()`, `set_lattice_params(u, τ)`, `get_lattice_params()`; ARCH
+   also forbids extra exports without updating §5, while F007's file list
+   covers only `wasm/src/lbm.rs` + `wasm/src/lib.rs`. Smallest consistent
+   choice: keep ARCH untouched here (respect the file list) and let F009 —
+   whose spec explicitly owns `set_conditions → LatticeParams` and instructs
+   "update §5 in the same commit if field names drift" — reconcile §5 then.
+   `wasm-pack` regenerates cleanly and `WasmProbe` still bundles (see below).

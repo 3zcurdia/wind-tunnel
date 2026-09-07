@@ -9,7 +9,7 @@
 | Size | M |
 | Skill fit | `Rust` |
 | Depends on | F003, F006 (SimState exists) |
-| Status | `[ ]` todo |
+| Status | `[x]` done |
 
 ## Goal
 
@@ -94,20 +94,20 @@ wasm/src/lib.rs              (modify) — SimState fields, step/reset_flow/steps
 
 ## Acceptance criteria
 
-- [ ] `rest_state_is_invariant`: uniform ρ=1, u=0, τ=1.0 → after 100 steps,
+- [x] `rest_state_is_invariant`: uniform ρ=1, u=0, τ=1.0 → after 100 steps,
       max |ρ−1| < 1e-6, |u| < 1e-6.
-- [ ] `mass_is_conserved_periodic`: sum(ρ) over grid changes < 1e-4 relative over
+- [x] `mass_is_conserved_periodic`: sum(ρ) over grid changes < 1e-4 relative over
       100 steps with u_inlet=0.05, τ=0.56 (periodic variant).
-- [ ] `uniform_flow_is_steady`: ρ=1, u=(0.05,0,0) everywhere, no obstacle → after
+- [x] `uniform_flow_is_steady`: ρ=1, u=(0.05,0,0) everywhere, no obstacle → after
       50 steps, max |u_x − 0.05| < 1e-4 (equilibrium flows stay put).
-- [ ] `gailei_insertion_creates_flow`: place a small solid block, u_inlet=0.08,
+- [x] `gailei_insertion_creates_flow`: place a small solid block, u_inlet=0.08,
       500 steps → downstream cells show u_x < 0.05 (wake exists), upstream shows
       u_x > 0.05 (blockage), no NaN.
-- [ ] `clamping_rejects_bad_params`: `set_lattice_params(0.5, 1.5)` → stored values
+- [x] `clamping_rejects_bad_params`: `set_lattice_params(0.5, 1.5)` → stored values
       are 0.15 and 0.95.
-- [ ] `no_nan_in_sanity_run`: 2 000 steps at defaults → `is_stable()` placeholder
+- [x] `no_nan_in_sanity_run`: 2 000 steps at defaults → `is_stable()` placeholder
       may not exist yet; assert `rho.all(|r| r.is_finite() && r > 0)` in-test.
-- [ ] Perf: `cargo test --release bench_note` (manual timing in test, not CI-gated)
+- [x] Perf: `cargo test --release bench_note` (manual timing in test, not CI-gated)
       logs ms/step at 128×48×48; record number in `DECISIONS.md` (target ≤ 4 ms).
 
 ## Test plan
