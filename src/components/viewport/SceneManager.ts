@@ -22,6 +22,7 @@ import {
 } from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { DOMAIN } from "@/lib/sim/types";
+import { VoxelDebugView } from "./VoxelDebugView";
 
 export type DomainLayers = "particles" | "meshModel" | "smoke" | "debug";
 
@@ -50,6 +51,8 @@ export class SceneManager {
   private lastFrameTime: number = 0;
   private disposed = false;
   private modelMesh: Mesh | null = null;
+  private voxelView: VoxelDebugView | null = null;
+  private voxelVisible = false;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvasParent = canvas.parentElement ?? document.body;
@@ -221,6 +224,8 @@ export class SceneManager {
     this.disposed = true;
     this.stop();
     this.subscribers.clear();
+    this.voxelView?.dispose();
+    this.voxelView = null;
     this.resizeObserver.disconnect();
     this.controls.dispose();
     this.scene.traverse((obj) => {
@@ -238,6 +243,43 @@ export class SceneManager {
     });
     this.renderer.dispose();
     this.layers.clear();
+  }
+
+  /**
+   * Map continuous domain-space (lattice) coords to world space (F006).
+   * Inverse of F005's world mapping: `world = (lattice − center) · 0.1`.
+   */
+  latticeToWorld(x: number, y: number, z: number): Vector3 {
+    return new Vector3(
+      x * LATTICE_TO_WORLD + WORLD_OFFSET.x,
+      y * LATTICE_TO_WORLD + WORLD_OFFSET.y,
+      z * LATTICE_TO_WORLD + WORLD_OFFSET.z,
+    );
+  }
+
+  /**
+   * Rebuild the debug voxel cloud from an occupancy snapshot (F006).
+   * Creates the view lazily in the `debug` layer; throttled inside the view.
+   */
+  updateVoxelDebug(occupancy: Uint8Array, nx: number, ny: number, nz: number): void {
+    if (!this.voxelView) {
+      this.voxelView = new VoxelDebugView(this.getLayer("debug"), (x, y, z) =>
+        this.latticeToWorld(x, y, z),
+      );
+      this.voxelView.setVisible(this.voxelVisible);
+    }
+    this.voxelView.update(occupancy, nx, ny, nz);
+  }
+
+  /** Toggle the debug voxel cloud (F006; F020 adds the real toggle). */
+  setVoxelDebugVisible(on: boolean): void {
+    this.voxelVisible = on;
+    this.voxelView?.setVisible(on);
+  }
+
+  /** Remove the debug voxel cloud, if any. */
+  clearVoxelDebug(): void {
+    this.voxelView?.clear();
   }
 
   private resize(): void {

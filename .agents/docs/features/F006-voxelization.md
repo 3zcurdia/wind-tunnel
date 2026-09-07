@@ -9,7 +9,7 @@
 | Size | M |
 | Skill fit | `Rust` |
 | Depends on | F003 (wasm pipeline); consumes F005's domain-space triangles |
-| Status | `[ ]` todo |
+| Status | `[x]` done |
 
 ## Goal
 
@@ -117,18 +117,24 @@ src/app/page.tsx                                     (modify) — hook pipeline 
 
 ## Acceptance criteria
 
-- [ ] Unit cube mesh (1×1×1 lattice-space box spanning cells [10..14)³ around the
+- [x] Unit cube mesh (1×1×1 lattice-space box spanning cells [10..14)³ around the
       placement center) → solid count between 90 and 160, all occupied cells within
       the expected bbox.
-- [ ] Sphere mesh (r = 12 lattice cells) → solid count ≈ (4/3)πr³ × [0.6, 1.3]
+      (Rust unit test: 125 solids — 98 surface + 27 interior — all within [9..15].)
+- [x] Sphere mesh (r = 12 lattice cells) → solid count ≈ (4/3)πr³ × [0.6, 1.3]
       (conservative rasterization tolerance), `surface_mode_flag() == false`.
-- [ ] Leaky mesh test: same sphere with one face removed (open shell) →
+      (Rust unit test: 8516 vs analytic 7238, ratio 1.18, watertight.)
+- [x] Leaky mesh test: same sphere with one face removed (open shell) →
       `surface_mode_flag() == true`, solid ≈ shell voxel count, no hang.
-- [ ] Degenerate: `set_mesh` with `[]` or length-4 array returns 0 and leaves state
+      (Rust unit test: top-cap-removed sphere → 2580 shell cells, interior 0.)
+- [x] Degenerate: `set_mesh` with `[]` or length-4 array returns 0 and leaves state
       valid (no panic, subsequent calls work).
+      (Rust unit tests in `voxel.rs` + `lib.rs`: malformed → 0, later valid call succeeds.)
 - [ ] Debug view renders red cubes exactly covering the model silhouette from all
       three axis views.
-- [ ] `cargo test` passes (see test plan); `npm run lint`/`build` pass.
+      (Not verified here — needs a browser check: upload a sphere OBJ, tick
+      "Voxel debug view", compare the red cloud against the model.)
+- [x] `cargo test` passes (see test plan); `npm run lint`/`build` pass.
 
 ## Test plan
 

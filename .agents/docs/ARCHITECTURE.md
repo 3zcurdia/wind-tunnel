@@ -188,6 +188,8 @@ active_particle_count() -> u32
 vertex_pressure_ptr() -> *const f32
 /// Obstacle grid, 1 byte per cell (0 empty / 1 solid), row-major as §3.
 occupancy_ptr() -> *const u8
+occupancy_len() -> u32              // grid length in bytes (nx·ny·nz)
+surface_mode_flag() -> bool         // true when the last set_mesh fell back to shell-only (F006; surfaced in F022)
 
 // ── sampling & action ────────────────────────────────────────────────────
 /// Batch velocity sampling. points = n×3 domain-space coords, out = n×3 velocities.

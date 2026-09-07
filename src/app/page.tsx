@@ -1,14 +1,75 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import { UploadPanel } from "@/components/controls/UploadPanel";
+import { VoxelDebugToggle } from "@/components/controls/VoxelDebugToggle";
 import { Panel } from "@/components/ui/Panel";
 import { WasmProbe } from "@/components/ui/WasmProbe";
 import ViewportMount from "@/components/viewport/ViewportMount";
+import { getSceneManager } from "@/components/viewport/viewportBridge";
 import { useModelPipeline } from "@/lib/hooks/useModelPipeline";
-import { ModelProvider } from "@/lib/sim/ModelContext";
+import { parseModel } from "@/lib/mesh/loadModel";
+import { normalizeToDomain } from "@/lib/mesh/normalize";
+import { ModelProvider, useModel } from "@/lib/sim/ModelContext";
+import { voxelizeGeometry } from "@/lib/sim/voxelBridge";
 
 function ModelPipelineHost() {
   useModelPipeline();
+  return null;
+}
+
+/**
+ * TEMPORARY voxel pipeline (F006; folded into `SimEngine` in F019).
+ * Mirrors `useModelPipeline`'s parse → normalize path, then voxelizes the
+ * domain-space geometry and feeds the snapshot to the SceneManager debug
+ * layer. Kept separate (with its own generation counter) because F006's file
+ * list does not include the shared pipeline module.
+ */
+function VoxelPipelineHost() {
+  const { file } = useModel();
+  const generationRef = useRef(0);
+
+  useEffect(() => {
+    const generation = generationRef.current + 1;
+    generationRef.current = generation;
+
+    if (!file) {
+      getSceneManager()?.clearVoxelDebug();
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      const parsed = await parseModel(file).catch(() => null);
+      if (!parsed || cancelled || generationRef.current !== generation) return;
+      try {
+        const normalized = normalizeToDomain(parsed.geometry);
+        try {
+          if (cancelled || generationRef.current !== generation) return;
+          const snapshot = await voxelizeGeometry(normalized.geometry);
+          if (cancelled || generationRef.current !== generation) return;
+          getSceneManager()?.updateVoxelDebug(
+            snapshot.occupancy,
+            snapshot.nx,
+            snapshot.ny,
+            snapshot.nz,
+          );
+        } finally {
+          normalized.geometry.dispose();
+        }
+      } catch {
+        // Parse/normalize/voxelize failures surface via the main pipeline's
+        // error state; the previous debug cloud is left untouched.
+      } finally {
+        parsed.geometry.dispose();
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [file]);
+
   return null;
 }
 
@@ -16,6 +77,7 @@ export default function Home() {
   return (
     <ModelProvider>
       <ModelPipelineHost />
+      <VoxelPipelineHost />
       <div className="flex h-screen flex-col overflow-hidden">
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-neutral-800 px-4">
           <h1 className="text-sm font-semibold tracking-wide">Wind Tunnel</h1>
@@ -31,6 +93,7 @@ export default function Home() {
               </p>
               <UploadPanel />
               <WasmProbe />
+              <VoxelDebugToggle />
             </div>
           </Panel>
           <div className="min-h-[70vh] flex-1 overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900">

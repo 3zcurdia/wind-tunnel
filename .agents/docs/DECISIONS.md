@@ -109,5 +109,37 @@ stay consistent with `ARCHITECTURE.md`.
 5. **`showModel` clones before the lattice→world transform.** The caller's
    domain-space geometry must survive for F006 voxelization, so `showModel`
    clones the input, maps the clone with `(lattice − (64,24,24)) · 0.1`, and
-   leaves the passed geometry untouched (verified: input bbox unchanged after
-   normalize + world mapping).
+  leaves the passed geometry untouched (verified: input bbox unchanged after
+  normalize + world mapping).
+
+## 2026-09-07 — F006 (mesh → obstacle voxel grid)
+
+1. **Debug cube edge is 0.09 world units, not the spec's literal 0.9.** The spec
+   asks for `BoxGeometry(0.9, 0.9, 0.9)` with positions at
+   `lattice × 0.1 − offset`, but ARCHITECTURE.md §3 fixes 1 cell = 0.1 world
+   units — a 0.9-world cube would span 9 cells and bury the silhouette in one
+   red blob. Smallest consistent change: 0.9 lattice units × 0.1 = **0.09**
+   world (one slightly-gapped cube per cell), implemented in
+   `VoxelDebugView.ts`. No spec text touched (outside this feature's list).
+
+2. **`src/lib/sim/wasm.ts` grew beyond F006's file list (additive only).** The
+   loader is the single ABI owner until `SimEngine` (F019), and its own header
+   says the `WasmApi` type is "grown per feature" — `voxelBridge.ts` cannot
+   call `init_sim`/`set_mesh`/… without the extended type plus the
+   `memory` export for zero-copy reads. Added the six F006 exports and
+   captured `initOutput.memory`; `ping()` behavior unchanged.
+
+3. **`page.tsx` re-parses the file for voxelization (temporary duplication).**
+   F006's file list excludes `useModelPipeline.ts`, so the voxel hookup
+   (`VoxelPipelineHost`, defined inside `page.tsx`) runs its own
+   parse → normalize → bridge → debug-view pass with a separate generation
+   counter. Cost is one extra parse per upload; F019 folds both passes into
+   `SimEngine` per the spec's own TEMPORARY note.
+
+4. **Observed voxelization numbers (128×48×48 domain unless noted):**
+   unit box [10..14)³ in a 32³ test grid → **125 solids** (98 surface +
+   27 interior, watertight, spec range [90, 160]); sphere r = 12 →
+   **8516 solids** vs analytic 7238 (ratio 1.18, spec [0.6, 1.3]×);
+   same sphere minus the top cap → **surface_mode = true, 2580 shell cells**,
+   no hang. Node smoke test against the real `wasm-pack` artifact reproduced
+   the box count (125) through the raw `occupancy_ptr` view.

@@ -11,6 +11,20 @@
 /** Raw exports of the generated `windtunnel` module, grown per feature. */
 export type WasmApi = {
   ping(): string;
+  /** Allocate domain & solver state (F006; resets everything). */
+  init_sim(nx: number, ny: number, nz: number, particle_capacity: number): void;
+  /** Voxelize domain-space triangles; returns the solid cell count (F006). */
+  set_mesh(triangles: Float32Array): number;
+  /** Clear the mesh; the grid returns to all-fluid (F006). */
+  clear_mesh(): void;
+  /** Pointer to the occupancy grid bytes (F006; re-fetch after reallocating). */
+  occupancy_ptr(): number;
+  /** Occupancy grid length in bytes (F006). */
+  occupancy_len(): number;
+  /** True when the last set_mesh fell back to shell-only mode (F006). */
+  surface_mode_flag(): boolean;
+  /** Linear memory for zero-copy buffer views (see ARCHITECTURE.md §5). */
+  readonly memory: WebAssembly.Memory;
 };
 
 export class WasmLoadError extends Error {
@@ -27,8 +41,8 @@ export function loadWasm(): Promise<WasmApi> {
   loadPromise = (async () => {
     try {
       const mod = await import("@/wasm/windtunnel");
-      await mod.default();
-      return { ...mod, ping: mod.ping };
+      const initOutput = await mod.default();
+      return { ...mod, ping: mod.ping, memory: initOutput.memory };
     } catch (cause) {
       // Never cache a rejected promise: the next call retries fresh.
       loadPromise = null;
