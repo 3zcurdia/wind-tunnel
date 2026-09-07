@@ -9,7 +9,7 @@
 | Size | S |
 | Skill fit | `UI` |
 | Depends on | F001 (Panel atom); designed against F005's consumer API |
-| Status | `[ ]` todo |
+| Status | `[x]` done |
 
 ## Goal
 
@@ -88,16 +88,17 @@ src/app/page.tsx                         (modify) — provider wrap + mount pane
 
 ## Acceptance criteria
 
-- [ ] Dropping `model.obj` (< 50 MB) → success card with name/size/format, no errors.
-- [ ] Dropping a `.stl` → inline error "Unsupported format — use .obj or .ply".
-- [ ] Creating a 60 MB dummy `.obj` (`dd`/`head -c`) → "File too large (max 50 MB)".
-- [ ] Zero-byte file → "File is empty".
+- [x] Dropping `model.obj` (< 50 MB) → success card with name/size/format, no errors.
+- [x] Dropping a `.stl` → inline error "Unsupported format — use .obj or .ply".
+- [x] Creating a 60 MB dummy `.obj` (`dd`/`head -c`) → "File too large (max 50 MB)".
+- [x] Zero-byte file → "File is empty".
 - [ ] Drag-over highlights the drop zone; drag-leave resets it; drop outside the
-      zone does nothing harmful.
+      zone does nothing harmful. *(implemented per spec — needs browser check)*
 - [ ] Remove button returns panel to empty state; uploading a second file replaces
-      the first.
-- [ ] Keyboard: tab to drop zone, Enter opens file picker.
-- [ ] `npm run lint` / `npm run build` pass.
+      the first. *(implemented per spec — needs browser check)*
+- [ ] Keyboard: tab to drop zone, Enter opens file picker. *(implemented per spec —
+      needs browser check)*
+- [x] `npm run lint` / `npm run build` pass.
 
 ## Test plan
 

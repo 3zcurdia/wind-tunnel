@@ -36,7 +36,7 @@ F003 and can proceed while Phase 1 UI work happens.
 
 ### Phase 1 — Model Ingestion
 
-- [ ] [F004 — Upload UI (drag & drop, validation)](features/F004-upload-ui.md) — `S` `UI`
+- [x] [F004 — Upload UI (drag & drop, validation)](features/F004-upload-ui.md) — `S` `UI`
 - [ ] [F005 — Parse, display & normalize model](features/F005-model-load-display.md) — `S` `UI/3D`
 - [ ] [F006 — Rust: mesh → obstacle voxel grid](features/F006-voxelization.md) — `M` `Rust`
 

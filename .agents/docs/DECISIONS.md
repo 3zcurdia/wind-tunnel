@@ -41,3 +41,30 @@ stay consistent with `ARCHITECTURE.md`.
    "(delete) — replaced by real files later; keep for now", which is self-contradictory.
    The explicit trailing instruction ("keep for now") wins over the "(delete)" marker;
    F004 removes it when the UploadPanel lands.
+
+## 2026-09-07 — F004 (Upload UI)
+
+1. **ROADMAP diagram vs spec dependencies (UI track order).** The ASCII dependency
+   graph draws `F001 ─► F002 ─► F005 ─► F004`, implying F004 comes after F005 —
+   but F004's spec says "Depends on F001" only, while F005's spec says
+   "Depends on F002 (SceneManager), F004 (LoadedFile + context)". Both specs agree
+   F004 comes first; only the diagram disagrees (likely a reversed arrow).
+   Resolution: the specs' `Depends on` fields govern — F004 implemented before
+   F005. Diagram left untouched (out of this feature's file list).
+   Net effect: none on this change; F005 is unblocked next on the UI track.
+
+2. **`ModelContext` carries a `reading` flag not in the spec's shape.** The spec's
+   context shape (`file/status/error/setFile/clear`) has no loading indicator, but
+   §4 requires a "Reading file…" spinner + disabled input while `arrayBuffer()` is
+   in flight. Smallest additive change: exposed `reading: boolean` (and a `meta`
+   stub for F005, as §4 requests). No contract removed; `useModel()` shape is a
+   superset.
+
+3. **Drop zone is a real `<button>`, not a `<div role="button">`.** §4 calls for a
+   "`<button>`-like clickable area" that is focusable with Enter-to-browse.
+   A native `<button type="button">` satisfies focus/keyboard/a11y without
+   synthetic key handlers; drag handlers (`onDragOver/Leave/Drop`) attach to it
+   directly. `aria-label="Upload 3D model file"` preserved.
+
+4. **Removed `src/components/controls/.gitkeep`** per the F003 note above —
+   the directory now holds `UploadPanel.tsx`.
