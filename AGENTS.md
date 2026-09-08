@@ -51,6 +51,22 @@ All planning is in `.agents/docs/`:
    `cargo test` passing (Rust features), acceptance criteria in the spec checked,
    checkbox ticked in `ROADMAP.md`.
 
+## Additional notes
+
+- `cargo test` must be run from `wasm/` (the Rust crate root); there is no
+  Cargo workspace at the repo root.
+- Only Rust changes need `npm run wasm:build`; TypeScript-only changes don't.
+  The generated bindings in `src/wasm/` are gitignored — if the app reports
+  "Simulation engine failed to load", run `npm run wasm:build`.
+- Module boundaries (enforced by convention, see working rules above):
+  - `src/lib/sim/SimEngine.ts` — sole caller of the WASM ABI
+  - `src/components/viewport/SceneManager.ts` — sole owner of three.js scene objects
+  - `src/lib/viz/` (particles, smoke, heatmap) plugs into SceneManager;
+    `src/components/controls/` are React panels wired through
+    `src/lib/sim/SimulationContext.tsx` and `ModelContext.tsx`
+- The WASM ABI contract is in `.agents/docs/ARCHITECTURE.md` §5 — it is binding;
+  changes to `wasm/src/lib.rs` exports must stay in sync with `src/lib/sim/wasm.ts`.
+
 ## Commands
 
 ```bash

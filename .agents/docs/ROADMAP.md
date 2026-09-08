@@ -20,6 +20,7 @@ surface — with live tuning of wind speed, air pressure, and viscosity.
 | M2 — Solver Core | LBM solver produces a stable flow field; sampling/pressure/stats APIs exist | F007–F013 |
 | M3 — Visualization (v1 usable) | Particles, heatmap, smoke, stats, and control panel all wired and live | F014–F020 |
 | M4 — Hardened v1 | Presets, edge cases, sample models; project is demo-ready | F021–F023 |
+| M5 — Post-v1 interaction | In-viewport model rotation (angle-of-attack control) | F024– |
 
 ---
 
@@ -71,6 +72,10 @@ F003 and can proceed while Phase 1 UI work happens.
 - [x] [F021 — Quality presets (low/medium/high)](features/F021-quality-presets.md) — `S` `logic` (2026-09-08; code + headless verification done, 4 visual/browser criteria need a browser — see spec notes)
 - [x] [F022 — Edge cases & error handling](features/F022-edge-cases.md) — `M` `logic` (2026-09-08; code + headless verification done, 5 manual/browser criteria need a browser — see spec notes)
 - [x] [F023 — Built-in sample models + README](features/F023-samples-readme.md) — `S` `docs` (2026-09-08; code + headless verification done, 5 visual/browser criteria need a browser — see spec notes)
+
+### Phase 7 — Post-v1 Interaction
+
+- [ ] [F024 — Viewport model rotation (angle of attack)](features/F024-viewport-model-rotation.md) — `M` `UI/3D`
 
 ---
 
