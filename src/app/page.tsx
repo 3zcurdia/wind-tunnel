@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { UploadPanel } from "@/components/controls/UploadPanel";
 import { ParticleCountSlider } from "@/components/controls/ParticleCountSlider";
 import { PressureLegend } from "@/components/controls/PressureLegend";
+import { SmokeControls } from "@/components/controls/SmokeControls";
 import { SmokeProbe } from "@/components/controls/SmokeProbe";
 import { VoxelDebugToggle } from "@/components/controls/VoxelDebugToggle";
 import { Panel } from "@/components/ui/Panel";
@@ -20,6 +21,7 @@ import {
   setHeatmapEnabled,
   startHeatmapDriver,
   startParticleDriver,
+  startSmokeDriver,
   subscribeHeatmapAnchors,
   voxelizeGeometry,
 } from "@/lib/sim/voxelBridge";
@@ -141,6 +143,34 @@ function HeatmapDriverHost() {
 }
 
 /**
+ * TEMPORARY smoke driver host (F016; folded into `useSimulation` in F019).
+ * Same mount-wait pattern as `ParticleDriverHost`: starts the voxelBridge
+ * smoke driver once the SceneManager is live; stops + disposes on unmount.
+ */
+function SmokeDriverHost() {
+  useEffect(() => {
+    let stop: (() => void) | null = null;
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      if (cancelled || stop !== null) return;
+      const manager = getSceneManager();
+      if (!manager) return;
+      window.clearInterval(timer);
+      stop = startSmokeDriver(manager);
+    }, 100);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      stop?.();
+      stop = null;
+    };
+  }, []);
+
+  return null;
+}
+
+/**
  * TEMPORARY heatmap toggle + legend (F015 §2; relocated by F018/F020).
  * The checkbox routes through the bridge (`HeatmapOverlay.attach/clear` +
  * material switch); the legend is pure props-driven and refreshes at the
@@ -187,6 +217,7 @@ export default function Home() {
       <VoxelPipelineHost />
       <ParticleDriverHost />
       <HeatmapDriverHost />
+      <SmokeDriverHost />
       <div className="flex h-screen flex-col overflow-hidden">
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-neutral-800 px-4">
           <h1 className="text-sm font-semibold tracking-wide">Wind Tunnel</h1>
@@ -206,6 +237,7 @@ export default function Home() {
               <SmokeProbe />
               <ParticleCountSlider />
               <HeatmapPanel />
+              <SmokeControls />
             </div>
           </Panel>
           <div className="min-h-[70vh] flex-1 overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900">

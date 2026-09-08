@@ -57,7 +57,7 @@ F003 and can proceed while Phase 1 UI work happens.
 
 - [x] [F014 — Particle streamlines](features/F014-particle-streamlines.md) — `M` `UI/3D` (2026-09-08; code + headless verification done, 3 visual/perf criteria need a browser — see spec notes)
 - [x] [F015 — Surface pressure heatmap](features/F015-pressure-heatmap.md) — `S` `UI/3D` (2026-09-08; code + headless verification done, 5 visual/browser criteria need a browser — see spec notes)
-- [ ] [F016 — Smoke tracer lines](features/F016-smoke-tracers.md) — `M` `UI/3D`
+- [x] [F016 — Smoke tracer lines](features/F016-smoke-tracers.md) — `M` `UI/3D` (2026-09-08; code + headless verification done, 5 visual/browser criteria need a browser — see spec notes)
 - [ ] [F017 — Live stats panel](features/F017-stats-panel.md) — `S` `UI`
 
 ### Phase 5 — Controls & Orchestration

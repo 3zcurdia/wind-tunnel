@@ -6,6 +6,32 @@ stay consistent with `ARCHITECTURE.md`.
 
 ---
 
+## 2026-09-08 — F016 (smoke tracer lines)
+
+1. **Smoke `dt` is 1.0 lattice time unit per step, not `LatticeParams.dt`.**
+   The spec's driver note ("dt = current lattice dt from F009 params — the
+   bridge supplies it") reads as the `dt` field of `LatticeParams`, but that
+   field is physical seconds per lattice step (~3.84e-05 s at the 15 m/s
+   default; see `wasm/src/lib.rs::get_lattice_params`). Using it for the
+   lattice-space integration `p += v·dt` (v in lattice units, p in cells)
+   would move tracers ~4e-6 cells/frame — visibly frozen, failing the
+   wrap-around criterion. Smallest consistent reading: the lattice time step
+   is definitionally 1 per LBM step, so the bridge supplies
+   `SMOKE_DT_LATTICE = 1.0`, matching the particle driver's fixed
+   `advect_particles(1.0)` cadence (1 step/frame until F019 owns timing).
+   `SmokeTracers.update(dt, …)` stays agnostic — F019 can pass any dt later.
+
+Observed values (headless, Node 26.8.1, real `--target nodejs` artifact,
+128×48×48 + 8³ cube at [40..48)×[20..28)², F012 stable point (0.08, 0.56),
+25 tracers × 90 history): 240 developed steps + 600 frames, `stable == true`
+throughout; 0 non-finite, 0 inside the solid core; mean x 2.0 → 45.7,
+y-spread 16 → 21.7; 13/13 center-line tracers wrapped, 4 stalled at the face;
+per-frame `sample_velocity_batch` (25 pts) 0.016 ms + `SmokeTracers.update`
+0.027 ms — far inside the ≤ 2 ms budget. Unit suite
+`node --test src/lib/viz/SmokeTracers.test.mjs` 11/11 pass.
+
+---
+
 ## 2026-09-08 — F015 (surface pressure heatmap)
 
 1. **Vertex-pressure order is deduped+sorted, not display order — `attach()`

@@ -1,6 +1,7 @@
 import type { BufferGeometry } from "three";
 import { HeatmapOverlay } from "@/lib/viz/HeatmapOverlay";
 import { ParticleSystem } from "@/lib/viz/ParticleSystem";
+import { SmokeTracers } from "@/lib/viz/SmokeTracers";
 import type { SceneManager } from "@/components/viewport/SceneManager";
 import { DOMAIN } from "@/lib/sim/types";
 import { loadWasm, type WasmApi } from "@/lib/sim/wasm";
@@ -484,5 +485,205 @@ export function startHeatmapDriver(manager: SceneManager): () => void {
     manager.setModelVertexColors(false);
     if (heatmapOverlay === overlay) heatmapOverlay = null;
     if (heatmapManager === manager) heatmapManager = null;
+  };
+}
+
+// ── TEMPORARY smoke-tracer driver (F016; deleted in F019) ─────────────────
+// Until `SimEngine` exists, this section owns the live smoke loop: one
+// `SmokeTracers` rake on the SceneManager `smoke` layer, sampled from
+// `SceneManager.onFrame` after the particle driver's `step(1)` (subscription
+// order — this driver never calls `step` itself, mirroring the F015 heatmap
+// driver's read-only rule). `SmokeTracers` itself stays driver-agnostic (it
+// only receives the injected sampling closure — never imports wasm modules).
+
+/** Smoke rake size (F016 §1 default — no UI control in v1). */
+export const SMOKE_TRACER_COUNT = 25;
+/** Trail-length UI range (F016 §2 number input). */
+export const SMOKE_HISTORY_MIN = 30;
+export const SMOKE_HISTORY_MAX = 240;
+export const SMOKE_HISTORY_DEFAULT = 90;
+/** Rake-height slider range (F016 §2: y in 8..ny−8). */
+export const SMOKE_RAKE_Y_MIN = 8;
+export const SMOKE_RAKE_Y_MAX = DOMAIN.ny - 8;
+/** Rake-width slider range (F016 §2: halfWidth in 2..16). */
+export const SMOKE_HALF_WIDTH_MIN = 2;
+export const SMOKE_HALF_WIDTH_MAX = 16;
+
+/**
+ * Lattice time step per frame (F016 §1 `dt`). This is 1.0 lattice time unit
+ * per solver step — NOT `LatticeParams.dt` (physical seconds, ~4e-5 s),
+ * which would freeze the ribbons if used for lattice-space `p += v·dt`
+ * integration (see DECISIONS.md F016.1). Matches the particle driver's fixed
+ * `advect_particles(1.0)` cadence; F019 owns real timing.
+ */
+const SMOKE_DT_LATTICE = 1.0;
+
+/**
+ * Structural view of the F011 sampling ABI (same TEMPORARY-bridge pattern as
+ * above — folded into `SimEngine` in F019).
+ */
+type SmokeWasmApi = PressureWasmApi & {
+  sample_velocity_batch(points: Float32Array, out: Float32Array): void;
+};
+
+/** Rake line snapshot in the exact shape `SmokeTracers.setRake` takes. */
+export interface SmokeRakeState {
+  yCenter: number;
+  zCenter: number;
+  halfWidth: number;
+}
+
+let smokeEnabled = true;
+let smokeRake: SmokeRakeState = {
+  yCenter: DOMAIN.ny / 2,
+  zCenter: DOMAIN.nz / 2,
+  halfWidth: 8,
+};
+let smokeHistoryLen = SMOKE_HISTORY_DEFAULT;
+let smokeTracers: SmokeTracers | null = null;
+
+export function getSmokeEnabled(): boolean {
+  return smokeEnabled;
+}
+
+export function getSmokeRake(): SmokeRakeState {
+  return { ...smokeRake };
+}
+
+export function getSmokeHistoryLen(): number {
+  return smokeHistoryLen;
+}
+
+function clampSmokeRake(
+  yCenter: number,
+  zCenter: number,
+  halfWidth: number,
+): SmokeRakeState {
+  const y = Number.isFinite(yCenter)
+    ? Math.min(SMOKE_RAKE_Y_MAX, Math.max(SMOKE_RAKE_Y_MIN, yCenter))
+    : DOMAIN.ny / 2;
+  const z = Number.isFinite(zCenter)
+    ? Math.min(DOMAIN.nz - 1, Math.max(1, zCenter))
+    : DOMAIN.nz / 2;
+  const hw = Number.isFinite(halfWidth)
+    ? Math.min(
+        SMOKE_HALF_WIDTH_MAX,
+        Math.max(SMOKE_HALF_WIDTH_MIN, halfWidth),
+      )
+    : 8;
+  return { yCenter: y, zCenter: z, halfWidth: hw };
+}
+
+/**
+ * TEMPORARY smoke toggle backend (F016 §2; relocated by F018/F020).
+ * Disabling hides the `smoke` layer (lines removed from view, trails kept);
+ * re-enabling re-shows it with a fresh emission (re-seed, per the "on
+ * restores fresh emission" criterion). Safe before the driver starts (the
+ * flag persists; start applies it).
+ */
+export function setSmokeEnabled(on: boolean): void {
+  const wasOn = smokeEnabled;
+  smokeEnabled = on;
+  const tracers = smokeTracers;
+  if (!tracers) return;
+  if (on && !wasOn) {
+    tracers.setRake(smokeRake.yCenter, smokeRake.zCenter, smokeRake.halfWidth);
+  }
+}
+
+/**
+ * TEMPORARY rake backend (F016 §2; relocated by F018/F020). Clamps to the
+ * slider ranges and re-seeds live (param change clears trails, per spec §1).
+ */
+export function setSmokeRake(
+  yCenter: number,
+  zCenter: number,
+  halfWidth: number,
+): SmokeRakeState {
+  smokeRake = clampSmokeRake(yCenter, zCenter, halfWidth);
+  smokeTracers?.setRake(
+    smokeRake.yCenter,
+    smokeRake.zCenter,
+    smokeRake.halfWidth,
+  );
+  return { ...smokeRake };
+}
+
+/**
+ * TEMPORARY trail-length backend (F016 §2; relocated by F018/F020). Clamps
+ * to 30..240 and rebuilds live (disposal + new, no leaks).
+ */
+export function setSmokeHistoryLen(n: number): number {
+  const next = Number.isFinite(n)
+    ? Math.min(SMOKE_HISTORY_MAX, Math.max(SMOKE_HISTORY_MIN, Math.floor(n)))
+    : SMOKE_HISTORY_DEFAULT;
+  smokeHistoryLen = next;
+  smokeTracers?.setHistoryLen(next);
+  return next;
+}
+
+/**
+ * TEMPORARY frame driver (F016 §3). Each frame (read-only — no `step`): if
+ * the toggle is off, hide the `smoke` layer and skip; otherwise ensure it is
+ * visible and call `smoke.update(dt, closure)` with one batched
+ * `sample_velocity_batch` call (tracerCount ≤ 100 points — the ≤ 2 ms
+ * budget). Re-enabling after a disabled stretch re-seeds for a fresh
+ * emission.
+ *
+ * Returns a stop function that unsubscribes and disposes GPU resources.
+ * Safe under StrictMode remount.
+ */
+export function startSmokeDriver(manager: SceneManager): () => void {
+  const tracers = new SmokeTracers(manager.getLayer("smoke"), {
+    tracerCount: SMOKE_TRACER_COUNT,
+    historyLen: smokeHistoryLen,
+    seedLine: { ...smokeRake },
+  });
+  smokeTracers = tracers;
+  manager.getLayer("smoke").visible = smokeEnabled;
+  let stopped = false;
+  let api: SmokeWasmApi | null = null;
+  let wasEnabled = smokeEnabled;
+
+  const unsubscribe = manager.onFrame(() => {
+    if (stopped || api === null) return;
+    const layer = manager.getLayer("smoke");
+    if (!smokeEnabled) {
+      layer.visible = false;
+      wasEnabled = false;
+      return;
+    }
+    layer.visible = true;
+    if (!wasEnabled) {
+      // Fresh emission after a disabled stretch (toggle criterion).
+      tracers.setRake(
+        smokeRake.yCenter,
+        smokeRake.zCenter,
+        smokeRake.halfWidth,
+      );
+      wasEnabled = true;
+    }
+    const engine = api;
+    tracers.update(SMOKE_DT_LATTICE, (points, out) => {
+      engine.sample_velocity_batch(points, out);
+    });
+  });
+
+  void (async () => {
+    try {
+      const engine = (await ensureEngine()) as SmokeWasmApi;
+      if (stopped) return;
+      api = engine;
+    } catch {
+      // Engine load failure surfaces via the existing probes/pipeline error
+      // states; the driver simply stays idle (F019 replaces all of this).
+    }
+  })();
+
+  return () => {
+    stopped = true;
+    unsubscribe();
+    tracers.dispose();
+    if (smokeTracers === tracers) smokeTracers = null;
   };
 }
