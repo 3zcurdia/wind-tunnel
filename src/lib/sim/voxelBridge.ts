@@ -209,6 +209,89 @@ export async function runSmokeProbe(): Promise<SmokeProbeResult> {
   }
 }
 
+// ── TEMPORARY flow-conditions backend (F018; folded into `SimEngine` in F019)
+// Until `SimEngine` exists, this section owns the F009 `set_conditions` /
+// `reset_flow` path for the control panel: the panel commits slider values
+// here (debounced by the caller), and the viscosity-change caller chains
+// `resetSimFlow()` itself for the documented soft restart. Added here —
+// rather than in the panel — so raw ABI calls stay inside the temporary
+// engine owner per ARCHITECTURE.md §5 (see DECISIONS.md §F018.1).
+
+/** Structural view of the wasm-bindgen `LatticeParams` return (F009). */
+type ConditionsResultLike = {
+  readonly u_lattice: number;
+  readonly tau: number;
+  readonly unstable: boolean;
+  free(): void;
+};
+
+/** Structural view of the F009 conditions ABI (same TEMPORARY pattern). */
+type ConditionsWasmApi = ParticleWasmApi & {
+  set_conditions(
+    uMps: number,
+    pressureKpa: number,
+    viscosityPas: number,
+    domainLengthM: number,
+    charLengthM: number,
+  ): ConditionsResultLike;
+};
+
+/** Operating point in SI units (mirrors `conditions.ts` `FlowConditions`). */
+export interface FlowConditionParams {
+  uMps: number;
+  pressureKpa: number;
+  viscosityPas: number;
+}
+
+/** What the engine reported for the committed point (feeds the τ/unstable note). */
+export interface AppliedFlowConditions {
+  uLattice: number;
+  tau: number;
+  unstable: boolean;
+}
+
+/**
+ * TEMPORARY conditions commit (F018 §2; `SimEngine.setConditions` in F019).
+ * Forwards one debounced operating point to wasm `set_conditions` and frees
+ * the returned params object before resolving (same heap discipline as the
+ * anchor reads below). Never throws for finite input (`set_conditions`
+ * degrades to defaults); engine-load failure still rejects.
+ */
+export async function setFlowConditions(
+  params: FlowConditionParams,
+  charLenM = 0.25,
+  domainLengthM = 1.0,
+): Promise<AppliedFlowConditions> {
+  const api = (await ensureEngine()) as ConditionsWasmApi;
+  const result = api.set_conditions(
+    params.uMps,
+    params.pressureKpa,
+    params.viscosityPas,
+    domainLengthM,
+    charLenM,
+  );
+  try {
+    return {
+      uLattice: result.u_lattice,
+      tau: result.tau,
+      unstable: result.unstable,
+    };
+  } finally {
+    result.free();
+  }
+}
+
+/**
+ * TEMPORARY soft-restart primitive (F018 §2; `SimEngine.resetFlow` in F019).
+ * Re-initializes the flow field to uniform inlet conditions, keeping the
+ * mesh and the last conditions. Wakes the field for re-development; the
+ * particle pool is left untouched (unlike `runSmokeProbe`'s reseed).
+ */
+export async function resetSimFlow(): Promise<void> {
+  const api = (await ensureEngine()) as ParticleWasmApi;
+  api.reset_flow();
+}
+
 // ── TEMPORARY particle-streamlines driver (F014; deleted in F019) ──────────
 // Until `SimEngine` exists, this section owns the live particle loop: one
 // `ParticleSystem` on the SceneManager `particles` layer, stepped from

@@ -9,7 +9,7 @@
 | Size | S |
 | Skill fit | `UI` |
 | Depends on | F009 (`set_conditions`), F010 (`reset_flow`), F019 (SimulationContext — implement after F019 or against its API) |
-| Status | `[ ]` todo |
+| Status | `[x]` done (2026-09-08; code + headless verification done, 7 visual/browser criteria need a browser — see notes + DECISIONS.md §F018) |
 
 ## Goal
 
@@ -93,17 +93,49 @@ src/app/page.tsx                          (modify) — replace temporary rail co
 
 - [ ] Moving wind speed 15→40 visibly accelerates the flow within ~1 s (particles),
       stats q_ref follows ≈ 0.5·ρ·40² ≈ 963 Pa ± 10 %, no reset needed.
+      **HEADLESS HALVES VERIFIED, pixels outstanding:** `set_conditions(40,
+      101.3, …)` + `step(1)` → anchors `q_ref` 963.1 Pa == JS `derivedValues`
+      963.1 (the ±10 % band exact); `steps_done` 64 → 65 (no reset). Particle
+      acceleration on screen needs a browser.
 - [ ] Changing viscosity: flow field resets (visible re-development) and τ changes
       (verifiable via stats/derived readout); changing speed does **not** reset.
+      **BACKEND VERIFIED, visuals outstanding:** μ 1.81e-5 → 2.5e-5 keeps
+      τ = 0.505 clamped both sides (`unstable: true` — the F009 §2 regime, so
+      the "τ changes" half is unachievable inside the UI envelope); derived Re
+      665095 → 481528 is the readout-verifiable signal; `reset_flow` zeroes
+      `steps_done` with `q_ref` surviving. Visible re-development needs a
+      browser.
 - [ ] Extreme settings (60 m/s + min viscosity) either stay stable or the F019
       recovery kicks in — panel never freezes silently.
+      **DATA PATH VERIFIED, recovery/browser outstanding:** (60, 50 kPa,
+      0.5e-5) → τ = 0.505 clamped, `unstable: true` (amber clamp warning
+      shown), engine still answers with finite `q_ref`; 150 ms trailing
+      debounce bounds commits to ≤ 6.7/s by construction (no counter
+      committed). F019 recovery + freeze-freedom need a browser.
 - [ ] Space toggles run/pause from anywhere except focused inputs; buttons reflect
       running state (icon + label swap).
+      **IMPLEMENTED PER SPEC, browser key/click outstanding:** global keydown
+      skips INPUT/TEXTAREA/SELECT/BUTTON/contentEditable (focused buttons keep
+      native activation so space never double-fires); prerender ships
+      `⏸ Pause` + `aria-label="Pause simulation"` at `running: true`.
 - [ ] Reset flow re-develops the pattern from uniform; Reset all returns sliders to
       defaults too.
+      **BACKEND VERIFIED, visuals outstanding:** reset path is the probed
+      `reset_flow` (steps → 0); Reset all restores `DEFAULT_CONDITIONS`,
+      commits them, and resets (same calls as the passing probe). On-screen
+      re-development + the slider-return click need a browser.
 - [ ] All sliders disabled (grayed) until a model is loaded; transport enabled.
+      **MECHANISM VERIFIED IN SHIPPED MARKUP, visual gray outstanding:**
+      prerendered `index.html` carries `<fieldset disabled="">` around
+      Flow/Particles/Smoke/Layers (gated on `!engineReady || !hasModel`) with
+      the transport buttons outside it and live.
 - [ ] Derived readouts match hand-computed values at defaults
       (ρ=1.204, ν=1.506e-5, q_ref=135.5 Pa, Re=2.49e5 with charLen 0.25).
+      **MATH VERIFIED, print deltas noted:** unit test pins the true literals
+      at 101.325 kPa (ρ 1.204118, ν 1.5031745e-5, q 135.4633, Re 249472.03);
+      the prerender at slider defaults (101.3 kPa) shows ρ = 1.204 ✓,
+      ν = 1.50e-5 (print matches μ ≈ 1.813e-5 — F009 §4a), q = 135.4 Pa
+      (print holds at exactly 101.325), Re = 2.5e5 ✓. See DECISIONS.md §F018.4.
 
 ## Test plan
 

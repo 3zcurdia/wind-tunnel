@@ -62,7 +62,7 @@ F003 and can proceed while Phase 1 UI work happens.
 
 ### Phase 5 — Controls & Orchestration
 
-- [ ] [F018 — Control panel (wind speed / pressure / viscosity)](features/F018-control-panel.md) — `S` `UI`
+- [x] [F018 — Control panel (wind speed / pressure / viscosity)](features/F018-control-panel.md) — `S` `UI` (2026-09-08; code + headless verification done, 7 visual/browser criteria need a browser — see spec notes)
 - [ ] [F019 — Simulation loop orchestration](features/F019-sim-loop.md) — `M` `glue`
 - [ ] [F020 — Viewport polish (camera presets, layer toggles)](features/F020-viewport-polish.md) — `S` `UI`
 

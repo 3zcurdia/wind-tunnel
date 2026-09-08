@@ -6,6 +6,82 @@ stay consistent with `ARCHITECTURE.md`.
 
 ---
 
+## 2026-09-08 — F018 (control panel)
+
+Headless probes below drive the real `--target web` artifact via `initSync`
+(F014/F017 pattern), 128×48×48 + watertight 8³ box (729 solids,
+`surface_mode = false`), Node 26.8.1, Apple M4 Pro. `node --test
+src/lib/sim/conditions.test.mjs` 11/11 pass; `npm run lint` zero
+errors/warnings; `npm run build` succeeds (prerender evidence cited inline).
+
+1. **`SimulationContext` (F019) does not exist — controlled-props adapter, no
+    new context file.** F018's metadata lists F019 as a dependency while F019
+    lists F003–F018 (i.e. F018 itself): taken literally nothing could land
+    first. The spec resolves it explicitly ("implement after F019, or
+    concurrently against the contract below"), so `ControlPanel` is built
+    controlled against the contract shapes — `conditions` /
+    `setConditions({uMps, pressureKpa, viscosityPas})` / `transport
+    {running, toggleRun, resetFlow, resetAll}` — with `page.tsx` wiring a
+    TEMPORARY adapter of identical semantics (150 ms trailing debounce, ≤ ~7
+    commits/s by construction: 1/0.15 = 6.67; viscosity-change chains
+    `reset_flow`, speed/pressure never reset). Creating
+    `SimulationContext.tsx` here would steal F019's owned file (outside F018's
+    file list); F019 swaps the adapter for the real context without touching
+    the panel's contract. `readout: SimReadout | null` is deferred with it —
+    no F018 section consumes it, and an unused prop would be dead code.
+2. **`charLengthM` is a constant, not `ModelContext` state — no `ModelContext`
+    edit.** F018 §2 asks to add `charLengthM` to the model meta, but that file
+    is outside this feature's list — and the edit is provably redundant:
+    `normalizeToDomain` scales every model so its longest side spans exactly
+    0.25·nx cells = 0.25·L_domain meters, hence always 0.25 m at the default
+    domain length. `conditions.ts` exports `DEFAULT_CHAR_LEN_M = 0.25` with
+    the derivation in a comment.
+3. **Slider atom gains additive `disabled?`/`id?` props.** The contract props
+    alone cannot express F018 §1's "sliders disabled until a model is loaded";
+    the two optionals change no existing behavior.
+4. **Printed hand-values vs true literals (F009 §4a, continued).**
+    `derivedValues` implements the exact F009 formulas (ρ = P/(R·T), ν = μ/ρ,
+    q = ½ρU², Re = U·L/ν — wasm agrees to 1e-6: q_ref@15 135.430 vs JS
+    135.430). Deltas against the spec print: ν displays `1.50e-5`, not
+    `1.506e-5` (the print matches μ ≈ 1.813e-5, not the stated 1.81e-5);
+    q_ref at the *slider* default P = 101.3 (the 0.5 kPa step nearest sea
+    level — a range input cannot represent 101.325) displays `135.4 Pa`, not
+    the printed `135.5 Pa` (which holds at exactly 101.325: unit-pinned at
+    135.4633106). The test asserts the true literals tightly and pins both
+    mismatches so edits to the printed values fail loudly.
+5. **τ does not move inside the UI viscosity envelope — Re + reset are the
+    observable viscosity signals.** μ 1.81e-5 → 2.5e-5 at 40 m/s returns
+    τ = 0.505 clamped, `unstable: true` on both sides (the F009 §2 regime:
+    real air cannot reach the 0.505 floor at metre scale). The panel still
+    performs the documented soft restart on every μ change (verified:
+    `steps_done` 75 → 0, q_ref 963.1 Pa surviving), and the derived Re readout
+    moves 665095 → 481528 (ratio exactly 2.5/1.81). Criterion 2's "τ changes"
+    half is unachievable as printed; the amber clamp warning covers the
+    `unstable` signal until F019 recovery lands.
+6. **Deletions + pause semantics.** `WasmProbe.tsx` and
+    `VoxelDebugToggle.tsx` are deleted now per F018 §3 (F019's DELETE list
+    shrinks accordingly; `SceneManager.setVoxelDebugVisible` stays for F020's
+    layer toggles). `SmokeProbe` (F011) and the whole `voxelBridge` stay for
+    F019. Pause stops the three temporary drivers (stepping halts — resume
+    reuses the primed engine, so the developed flow survives; smoke trails
+    reseed, heatmap re-attaches). F019 will pause stepping while keeping
+    buffers on screen.
+7. **`voxelBridge.ts` grows two TEMPORARY exports (`setFlowConditions`,
+    `resetSimFlow`) — F006 precedent.** The panel needs a live
+    `set_conditions`/`reset_flow` path, and ARCHITECTURE forbids ABI calls
+    outside the (temporary) engine owner; the addition is ~40 lines, deleted
+    in F019 with the rest of the bridge.
+
+Observed values: q_ref@15 = 135.430 Pa (wasm == JS); q_ref@40 = 963.1 Pa
+(criterion's ≈963 ±10 % exact); speed change steps 64 → 65 (no reset);
+extremes (60 m/s, 50 kPa, μ = 0.5e-5) → τ = 0.505, u = 0.15,
+`unstable: true`, engine still answers; prerendered `index.html` ships
+`<fieldset disabled="">` around Flow/Particles/Smoke/Layers with transport
+buttons live (`⏸ Pause` initial), derived defaults `1.204 kg/m³`,
+`1.50e-5 m²/s`, `135.4 Pa`, `2.5e5`.
+
+---
+
 ## 2026-09-08 — F017 (live stats panel)
 
 Headless probes below drive the real `--target web` artifact via `initSync`

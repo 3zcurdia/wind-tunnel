@@ -1,15 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { UploadPanel } from "@/components/controls/UploadPanel";
-import { ParticleCountSlider } from "@/components/controls/ParticleCountSlider";
-import { PressureLegend } from "@/components/controls/PressureLegend";
-import { SmokeControls } from "@/components/controls/SmokeControls";
+import { ControlPanel } from "@/components/controls/ControlPanel";
 import { SmokeProbe } from "@/components/controls/SmokeProbe";
 import { StatsPanel } from "@/components/controls/StatsPanel";
-import { VoxelDebugToggle } from "@/components/controls/VoxelDebugToggle";
-import { Panel } from "@/components/ui/Panel";
-import { WasmProbe } from "@/components/ui/WasmProbe";
 import ViewportMount from "@/components/viewport/ViewportMount";
 import { getSceneManager } from "@/components/viewport/viewportBridge";
 import { useModelPipeline } from "@/lib/hooks/useModelPipeline";
@@ -17,15 +12,22 @@ import { parseModel } from "@/lib/mesh/loadModel";
 import { normalizeToDomain } from "@/lib/mesh/normalize";
 import { ModelProvider, useModel } from "@/lib/sim/ModelContext";
 import {
-  getHeatmapAnchors,
-  getHeatmapEnabled,
-  setHeatmapEnabled,
+  DEFAULT_CHAR_LEN_M,
+  DEFAULT_CONDITIONS,
+  DOMAIN_LENGTH_M,
+  type FlowConditions,
+} from "@/lib/sim/conditions";
+import {
+  resetSimFlow,
+  setFlowConditions,
   startHeatmapDriver,
   startParticleDriver,
   startSmokeDriver,
-  subscribeHeatmapAnchors,
   voxelizeGeometry,
 } from "@/lib/sim/voxelBridge";
+
+/** Trailing debounce for wasm condition commits (F018 §2: ≤ ~7 calls/s). */
+const CONDITIONS_DEBOUNCE_MS = 150;
 
 function ModelPipelineHost() {
   useModelPipeline();
@@ -90,10 +92,13 @@ function VoxelPipelineHost() {
 /**
  * TEMPORARY particle driver host (F014; folded into `useSimulation` in F019).
  * Waits for the SceneManager to mount (Viewport registers it asynchronously),
- * then starts the voxelBridge particle driver; stops + disposes on unmount.
+ * then starts the voxelBridge particle driver; stops + disposes on unmount or
+ * while paused (pausing halts stepping — resume reuses the primed engine, so
+ * the developed flow survives; smoke trails reseed).
  */
-function ParticleDriverHost() {
+function ParticleDriverHost({ running }: { readonly running: boolean }) {
   useEffect(() => {
+    if (!running) return;
     let stop: (() => void) | null = null;
     let cancelled = false;
     const timer = window.setInterval(() => {
@@ -110,7 +115,7 @@ function ParticleDriverHost() {
       stop?.();
       stop = null;
     };
-  }, []);
+  }, [running]);
 
   return null;
 }
@@ -118,10 +123,12 @@ function ParticleDriverHost() {
 /**
  * TEMPORARY heatmap driver host (F015; folded into `useSimulation` in F019).
  * Same mount-wait pattern as `ParticleDriverHost`: starts the voxelBridge
- * heatmap driver once the SceneManager is live; stops + detaches on unmount.
+ * heatmap driver once the SceneManager is live; stops + detaches on unmount
+ * or while paused.
  */
-function HeatmapDriverHost() {
+function HeatmapDriverHost({ running }: { readonly running: boolean }) {
   useEffect(() => {
+    if (!running) return;
     let stop: (() => void) | null = null;
     let cancelled = false;
     const timer = window.setInterval(() => {
@@ -138,7 +145,7 @@ function HeatmapDriverHost() {
       stop?.();
       stop = null;
     };
-  }, []);
+  }, [running]);
 
   return null;
 }
@@ -146,10 +153,12 @@ function HeatmapDriverHost() {
 /**
  * TEMPORARY smoke driver host (F016; folded into `useSimulation` in F019).
  * Same mount-wait pattern as `ParticleDriverHost`: starts the voxelBridge
- * smoke driver once the SceneManager is live; stops + disposes on unmount.
+ * smoke driver once the SceneManager is live; stops + disposes on unmount or
+ * while paused.
  */
-function SmokeDriverHost() {
+function SmokeDriverHost({ running }: { readonly running: boolean }) {
   useEffect(() => {
+    if (!running) return;
     let stop: (() => void) | null = null;
     let cancelled = false;
     const timer = window.setInterval(() => {
@@ -166,59 +175,203 @@ function SmokeDriverHost() {
       stop?.();
       stop = null;
     };
-  }, []);
+  }, [running]);
 
   return null;
 }
 
-/**
- * TEMPORARY heatmap toggle + legend (F015 §2; relocated by F018/F020).
- * The checkbox routes through the bridge (`HeatmapOverlay.attach/clear` +
- * material switch); the legend is pure props-driven and refreshes at the
- * bridge's 4 Hz anchor cadence (small subtree — acceptable per spec §4).
- */
-function HeatmapPanel() {
-  const [enabled, setEnabled] = useState(getHeatmapEnabled);
-  const [anchors, setAnchors] = useState(getHeatmapAnchors);
+interface FlowBackend {
+  readonly conditions: FlowConditions;
+  readonly setConditions: (next: FlowConditions) => void;
+  readonly resetFlow: () => void;
+  readonly resetAll: () => void;
+  readonly engineReady: boolean;
+  readonly conditionsUnstable: boolean;
+  readonly engineError: string | null;
+}
 
-  useEffect(() => subscribeHeatmapAnchors(setAnchors), []);
+/**
+ * TEMPORARY conditions/transport backend (F018; `SimulationContext` in F019).
+ *
+ * Owns the slider state, debounces wasm commits (150 ms trailing — at most
+ * ~7 `set_conditions` calls/s during a fast drag), and chains the documented
+ * soft restart (`reset_flow`) onto the viscosity path only. Speed/pressure
+ * commits never reset. Failures surface as `engineError` (never silent).
+ */
+function useFlowBackend(): FlowBackend {
+  const [conditions, setConditionsState] =
+    useState<FlowConditions>(DEFAULT_CONDITIONS);
+  const [engineReady, setEngineReady] = useState(false);
+  const [conditionsUnstable, setConditionsUnstable] = useState(false);
+  const [engineError, setEngineError] = useState<string | null>(null);
+  const lastMuRef = useRef(DEFAULT_CONDITIONS.viscosityPas);
+  const pendingRef = useRef<FlowConditions | null>(null);
+  const timerRef = useRef<number | null>(null);
+
+  const fireBackend = useCallback(
+    async (next: FlowConditions, forceReset: boolean): Promise<void> => {
+      try {
+        const applied = await setFlowConditions(
+          {
+            uMps: next.uMps,
+            pressureKpa: next.pressureKpa,
+            viscosityPas: next.viscosityPas,
+          },
+          DEFAULT_CHAR_LEN_M,
+          DOMAIN_LENGTH_M,
+        );
+        if (forceReset || next.viscosityPas !== lastMuRef.current) {
+          await resetSimFlow();
+        }
+        lastMuRef.current = next.viscosityPas;
+        setConditionsUnstable(applied.unstable);
+        setEngineError(null);
+        setEngineReady(true);
+      } catch {
+        setEngineError("Engine update failed — retry shortly.");
+      }
+    },
+    [],
+  );
+
+  const setConditions = useCallback(
+    (next: FlowConditions) => {
+      setConditionsState(next);
+      pendingRef.current = next;
+      if (timerRef.current !== null) {
+        window.clearTimeout(timerRef.current);
+      }
+      timerRef.current = window.setTimeout(() => {
+        timerRef.current = null;
+        const pending = pendingRef.current;
+        pendingRef.current = null;
+        if (pending !== null) {
+          void fireBackend(pending, false);
+        }
+      }, CONDITIONS_DEBOUNCE_MS);
+    },
+    [fireBackend],
+  );
+
+  const resetFlow = useCallback(() => {
+    void (async () => {
+      try {
+        await resetSimFlow();
+        setEngineError(null);
+      } catch {
+        setEngineError("Engine reset failed — retry shortly.");
+      }
+    })();
+  }, []);
+
+  const resetAll = useCallback(() => {
+    if (timerRef.current !== null) {
+      window.clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    pendingRef.current = null;
+    setConditionsState(DEFAULT_CONDITIONS);
+    void fireBackend(DEFAULT_CONDITIONS, true);
+  }, [fireBackend]);
+
+  // Prime the engine with the slider defaults on mount (also the readiness
+  // probe gating the sliders); flush any pending drag value on unmount.
+  // The state sets below run only after the async engine load resolves, never
+  // synchronously in the effect body — this is external-system
+  // synchronization, the sanctioned effect use.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void fireBackend(DEFAULT_CONDITIONS, false);
+    return () => {
+      if (timerRef.current !== null) {
+        window.clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+      const pending = pendingRef.current;
+      pendingRef.current = null;
+      if (pending !== null) {
+        void fireBackend(pending, false);
+      }
+    };
+  }, [fireBackend]);
+
+  return useMemo(
+    () => ({
+      conditions,
+      setConditions,
+      resetFlow,
+      resetAll,
+      engineReady,
+      conditionsUnstable,
+      engineError,
+    }),
+    [
+      conditions,
+      setConditions,
+      resetFlow,
+      resetAll,
+      engineReady,
+      conditionsUnstable,
+      engineError,
+    ],
+  );
+}
+
+/**
+ * Controls rail: UploadPanel first, then the F018 instrument panel, then the
+ * remaining temporary probe (F011's SmokeProbe — deleted in F019 with the
+ * rest of the temporary layer).
+ */
+function ControlsRail({
+  running,
+  onToggleRun,
+}: {
+  readonly running: boolean;
+  readonly onToggleRun: () => void;
+}) {
+  const { file, meta } = useModel();
+  const backend = useFlowBackend();
+  const hasModel = file !== null && meta !== undefined;
+
+  const transport = useMemo(
+    () => ({
+      running,
+      toggleRun: onToggleRun,
+      resetFlow: backend.resetFlow,
+      resetAll: backend.resetAll,
+    }),
+    [running, onToggleRun, backend.resetFlow, backend.resetAll],
+  );
 
   return (
-    <div>
-      <label
-        htmlFor="heatmap-toggle"
-        className="mb-2 flex cursor-pointer items-center gap-2 text-xs font-medium text-neutral-300"
-      >
-        <input
-          id="heatmap-toggle"
-          type="checkbox"
-          checked={enabled}
-          onChange={(event) => {
-            const on = event.target.checked;
-            setEnabled(on);
-            setHeatmapEnabled(on);
-          }}
-          className="accent-blue-500"
-        />
-        Surface pressure
-      </label>
-      <PressureLegend
-        pMinPa={anchors.pMinPa}
-        pMaxPa={anchors.pMaxPa}
-        qRefPa={anchors.qRefPa}
+    <div className="w-80 shrink-0 space-y-4 overflow-y-auto pr-1">
+      <UploadPanel />
+      <ControlPanel
+        conditions={backend.conditions}
+        setConditions={backend.setConditions}
+        transport={transport}
+        controlsDisabled={!backend.engineReady || !hasModel}
+        conditionsUnstable={backend.conditionsUnstable}
+        engineError={backend.engineError}
       />
+      <SmokeProbe />
     </div>
   );
 }
 
 export default function Home() {
+  const [running, setRunning] = useState(true);
+  const toggleRun = useCallback(() => {
+    setRunning((r) => !r);
+  }, []);
+
   return (
     <ModelProvider>
       <ModelPipelineHost />
       <VoxelPipelineHost />
-      <ParticleDriverHost />
-      <HeatmapDriverHost />
-      <SmokeDriverHost />
+      <ParticleDriverHost running={running} />
+      <HeatmapDriverHost running={running} />
+      <SmokeDriverHost running={running} />
       <div className="flex h-screen flex-col overflow-hidden">
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-neutral-800 px-4">
           <h1 className="text-sm font-semibold tracking-wide">Wind Tunnel</h1>
@@ -226,21 +379,8 @@ export default function Home() {
             ※ demo placeholder
           </span>
         </header>
-        <main className="flex flex-1 gap-4 p-4">
-          <Panel title="Controls" className="w-80 shrink-0">
-            <div className="space-y-4">
-              <p className="text-xs text-neutral-500">
-                Upload + tuning controls wire in F004 / F018.
-              </p>
-              <UploadPanel />
-              <WasmProbe />
-              <VoxelDebugToggle />
-              <SmokeProbe />
-              <ParticleCountSlider />
-              <HeatmapPanel />
-              <SmokeControls />
-            </div>
-          </Panel>
+        <main className="flex min-h-0 flex-1 gap-4 p-4">
+          <ControlsRail running={running} onToggleRun={toggleRun} />
           <div className="min-h-[70vh] flex-1 overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900">
             <ViewportMount />
           </div>
