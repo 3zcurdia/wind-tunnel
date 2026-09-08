@@ -6,6 +6,7 @@ import { Slider } from "@/components/ui/Slider";
 import { ParticleCountSlider } from "@/components/controls/ParticleCountSlider";
 import { PressureLegend } from "@/components/controls/PressureLegend";
 import { SmokeControls } from "@/components/controls/SmokeControls";
+import { getSceneManager } from "@/components/viewport/viewportBridge";
 import { useSimulationContext } from "@/lib/sim/SimulationContext";
 import {
   AIR_PRESSURE_RANGE,
@@ -78,34 +79,105 @@ function formatNu(nuM2S: number): string {
   return nuM2S.toExponential(2).replace("e+", "e");
 }
 
+/** Single layer checkbox row (F020 §3), styled like the F018 toggles. */
+function LayerToggle({
+  id,
+  label,
+  checked,
+  onChange,
+}: {
+  readonly id: string;
+  readonly label: string;
+  readonly checked: boolean;
+  readonly onChange: (on: boolean) => void;
+}) {
+  return (
+    <label
+      htmlFor={id}
+      className="mb-2 flex cursor-pointer items-center gap-2 text-xs font-medium text-neutral-300"
+    >
+      <input
+        id={id}
+        type="checkbox"
+        checked={checked}
+        onChange={(event) => {
+          onChange(event.target.checked);
+        }}
+        className="accent-blue-500"
+      />
+      {label}
+    </label>
+  );
+}
+
 /**
- * Heatmap visibility + legend (F015's toggle + legend, fed by
- * `SimulationContext` since F019: the 4 Hz readout carries the same anchors
- * the deleted bridge pushed — full layer toggles remain F020's job).
+ * Layer toggles (F020 §3) + the F015 pressure legend. Smoke and heatmap
+ * state is applied every frame by the F019 loop; the other three flags are
+ * SceneManager-backed and applied by the effect below. Toggles are
+ * independent and instant. The voxel-debug toggle flips real state but has
+ * no visible effect in v1 — nothing feeds the cloud (DECISIONS §F020.2).
  */
 function LayersSection() {
-  const { heatmapEnabled, setHeatmapEnabled, readout } =
-    useSimulationContext();
+  const {
+    heatmapEnabled,
+    setHeatmapEnabled,
+    smokeEnabled,
+    setSmokeEnabled,
+    particlesVisible,
+    setParticlesVisible,
+    voxelDebugVisible,
+    setVoxelDebugVisible,
+    domainBoxVisible,
+    setDomainBoxVisible,
+    readout,
+  } = useSimulationContext();
   const anchors = readout ?? { pMinPa: 0, pMaxPa: 0, qRefPa: 0 };
+
+  // Push the SceneManager-backed flags on change. Defaults match a fresh
+  // SceneManager (particles/domain shown, voxels hidden), and the fieldset
+  // gates interaction until the engine is ready — long after the viewport
+  // registers — so a null manager here is a harmless no-op.
+  useEffect(() => {
+    const manager = getSceneManager();
+    if (!manager) return;
+    manager.setLayerVisible("particles", particlesVisible);
+    manager.setVoxelDebugVisible(voxelDebugVisible);
+    manager.setDomainBoxVisible(domainBoxVisible);
+  }, [particlesVisible, voxelDebugVisible, domainBoxVisible]);
 
   return (
     <section>
       <SectionTitle>Layers</SectionTitle>
-      <label
-        htmlFor="heatmap-toggle"
-        className="mb-2 flex cursor-pointer items-center gap-2 text-xs font-medium text-neutral-300"
-      >
-        <input
-          id="heatmap-toggle"
-          type="checkbox"
-          checked={heatmapEnabled}
-          onChange={(event) => {
-            setHeatmapEnabled(event.target.checked);
-          }}
-          className="accent-blue-500"
-        />
-        Surface pressure
-      </label>
+      <LayerToggle
+        id="layer-particles"
+        label="Particles"
+        checked={particlesVisible}
+        onChange={setParticlesVisible}
+      />
+      <LayerToggle
+        id="layer-smoke"
+        label="Smoke tracers"
+        checked={smokeEnabled}
+        onChange={setSmokeEnabled}
+      />
+      <LayerToggle
+        id="heatmap-toggle"
+        label="Surface pressure"
+        checked={heatmapEnabled}
+        onChange={setHeatmapEnabled}
+      />
+      <LayerToggle
+        id="layer-voxel-debug"
+        label="Voxel debug"
+        checked={voxelDebugVisible}
+        onChange={setVoxelDebugVisible}
+      />
+      <LayerToggle
+        id="layer-domain-box"
+        label="Domain box"
+        checked={domainBoxVisible}
+        onChange={setDomainBoxVisible}
+      />
       <PressureLegend
         pMinPa={anchors.pMinPa}
         pMaxPa={anchors.pMaxPa}

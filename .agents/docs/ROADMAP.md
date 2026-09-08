@@ -64,7 +64,7 @@ F003 and can proceed while Phase 1 UI work happens.
 
 - [x] [F018 — Control panel (wind speed / pressure / viscosity)](features/F018-control-panel.md) — `S` `UI` (2026-09-08; code + headless verification done, 7 visual/browser criteria need a browser — see spec notes)
 - [x] [F019 — Simulation loop orchestration](features/F019-sim-loop.md) — `M` `glue` (2026-09-08; code + headless verification done, 5 visual/browser criteria need a browser — see spec notes)
-- [ ] [F020 — Viewport polish (camera presets, layer toggles)](features/F020-viewport-polish.md) — `S` `UI`
+- [x] [F020 — Viewport polish (camera presets, layer toggles)](features/F020-viewport-polish.md) — `S` `UI` (2026-09-08; code + headless verification done, 5 visual/browser criteria need a browser — see spec notes)
 
 ### Phase 6 — Hardening
 

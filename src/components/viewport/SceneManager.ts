@@ -16,6 +16,7 @@ import {
   MeshStandardMaterial,
   PerspectiveCamera,
   Scene,
+  Spherical,
   SRGBColorSpace,
   Vector3,
   WebGLRenderer,
@@ -25,6 +26,48 @@ import { DOMAIN } from "@/lib/sim/types";
 import { VoxelDebugView } from "./VoxelDebugView";
 
 export type DomainLayers = "particles" | "meshModel" | "smoke" | "debug";
+
+/** Camera preset identifiers (F020 §1). */
+export type CameraPreset = "front" | "top" | "iso";
+
+/** Thrown by `SceneManager.screenshot()` when the GL context is lost (F020). */
+export class ScreenshotError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ScreenshotError";
+  }
+}
+
+/**
+ * Preset camera offsets from the current orbit target (F020 §1), distance
+ * ≈ 18 world units. `front` sits on the +Z axis so the wind (+X,
+ * ARCHITECTURE.md §3) reads left→right on screen — the spec's printed
+ * "(−18, 0, 0)" would align the flow with the view axis (see
+ * DECISIONS.md §F020.1). `iso` is the F002 default position.
+ */
+const CAMERA_PRESET_OFFSETS: Record<CameraPreset, Readonly<Vector3>> = {
+  front: new Vector3(0, 0, 18),
+  top: new Vector3(0, 18, 0),
+  iso: new Vector3(14, 7, 14),
+};
+
+/** Default camera-preset tween duration (F020: "~600 ms"). */
+const CAMERA_TWEEN_DEFAULT_MS = 600;
+
+/** F020 §1 easing; pure function, pinned headless (DECISIONS.md §F020.1). */
+function easeInOutCubic(t: number): number {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
+/** Active camera-preset flight; null when idle (F020). */
+interface CameraTween {
+  readonly startedMs: number;
+  readonly durationMs: number;
+  /** Orbit target, frozen at tween start (F020 §1: "the current target"). */
+  readonly target: Vector3;
+  readonly from: Spherical;
+  readonly to: Spherical;
+}
 
 const DOMAIN_SIZE = { x: 12.8, y: 4.8, z: 4.8 } as const;
 
@@ -47,6 +90,12 @@ export class SceneManager {
   private readonly canvasParent: HTMLElement;
   private readonly layers: Map<DomainLayers, Group> = new Map();
   private readonly subscribers: Set<FrameCallback> = new Set();
+  private readonly domainGroup: Group = new Group();
+  private cameraTween: CameraTween | null = null;
+  /** OrbitControls `start` handler: user input cancels any preset flight. */
+  private readonly cancelCameraTween = (): void => {
+    this.cameraTween = null;
+  };
   private rafHandle: number | null = null;
   private lastFrameTime: number = 0;
   private disposed = false;
@@ -80,6 +129,8 @@ export class SceneManager {
     this.controls.target.set(0, 0, 0);
     this.controls.minDistance = 2;
     this.controls.maxDistance = 60;
+    // F020: grabbing the scene mid-tween cancels the preset flight.
+    this.controls.addEventListener("start", this.cancelCameraTween);
 
     const hemi = new HemisphereLight("#cfe8ff", "#202020", 0.9);
     const dir = new DirectionalLight(0xffffff, 1.2);
@@ -93,11 +144,9 @@ export class SceneManager {
       domainEdges,
       new LineBasicMaterial({ color: "#3b82f6", transparent: true, opacity: 0.6 }),
     );
-    this.scene.add(domainLine);
 
     const ground = new GridHelper(20, 40, "#1f2937", "#111827");
     ground.position.y = -DOMAIN_SIZE.y / 2;
-    this.scene.add(ground);
 
     const inletGeo = new BoxGeometry(1, DOMAIN_SIZE.y, DOMAIN_SIZE.z);
     const inletMat = new MeshBasicMaterial({
@@ -108,7 +157,12 @@ export class SceneManager {
     });
     const inlet = new Mesh(inletGeo, inletMat);
     inlet.position.x = -DOMAIN_SIZE.x / 2;
-    this.scene.add(inlet);
+
+    // Box + grid + inlet marker share one group so F020's
+    // `setDomainBoxVisible` toggles them as a unit.
+    this.domainGroup.name = "domainBox";
+    this.domainGroup.add(domainLine, ground, inlet);
+    this.scene.add(this.domainGroup);
 
     const layerNames: DomainLayers[] = [
       "particles",
@@ -140,6 +194,7 @@ export class SceneManager {
       if (this.disposed) return;
       const dt = Math.max(0, (now - this.lastFrameTime) / 1000);
       this.lastFrameTime = now;
+      this.advanceCameraTween(now);
       this.controls.update();
       for (const cb of this.subscribers) cb(dt);
       if (!document.hidden) this.renderer.render(this.scene, this.camera);
@@ -255,10 +310,12 @@ export class SceneManager {
     if (this.disposed) return;
     this.disposed = true;
     this.stop();
+    this.cameraTween = null;
     this.subscribers.clear();
     this.voxelView?.dispose();
     this.voxelView = null;
     this.resizeObserver.disconnect();
+    this.controls.removeEventListener("start", this.cancelCameraTween);
     this.controls.dispose();
     this.scene.traverse((obj) => {
       const m = obj as unknown as {
@@ -315,7 +372,11 @@ export class SceneManager {
     this.voxelView.update(occupancy, nx, ny, nz);
   }
 
-  /** Toggle the debug voxel cloud (F006; F020 adds the real toggle). */
+  /**
+   * Toggle the debug voxel cloud (F006; the F020 Layers toggle drives this).
+   * Note: nothing feeds `updateVoxelDebug` in v1, so the cloud stays empty —
+   * see DECISIONS.md §F020.2.
+   */
   setVoxelDebugVisible(on: boolean): void {
     this.voxelVisible = on;
     this.voxelView?.setVisible(on);
@@ -324,6 +385,90 @@ export class SceneManager {
   /** Remove the debug voxel cloud, if any. */
   clearVoxelDebug(): void {
     this.voxelView?.clear();
+  }
+
+  /**
+   * Fly the camera to a preset view (F020 §1): easeInOutCubic spherical
+   * interpolation of the position around the *current* orbit target (the
+   * target itself stays frozen — DECISIONS.md §F020.1). Any OrbitControls
+   * interaction (its `start` event) cancels the flight mid-tween.
+   * `animateMs <= 0` snaps instantly.
+   */
+  setCameraPreset(preset: CameraPreset, animateMs: number = CAMERA_TWEEN_DEFAULT_MS): void {
+    const target = this.controls.target.clone();
+    const destination = CAMERA_PRESET_OFFSETS[preset].clone().add(target);
+    if (animateMs <= 0) {
+      this.cameraTween = null;
+      this.camera.position.copy(destination);
+      this.camera.lookAt(target);
+      return;
+    }
+    const from = new Spherical().setFromVector3(
+      this.camera.position.clone().sub(target),
+    );
+    const to = new Spherical().setFromVector3(
+      destination.clone().sub(target),
+    );
+    // Shortest-path azimuth: a raw theta lerp could swing the long way around.
+    let dTheta = to.theta - from.theta;
+    while (dTheta > Math.PI) dTheta -= 2 * Math.PI;
+    while (dTheta < -Math.PI) dTheta += 2 * Math.PI;
+    to.theta = from.theta + dTheta;
+    this.cameraTween = {
+      startedMs: performance.now(),
+      durationMs: animateMs,
+      target,
+      from,
+      to,
+    };
+  }
+
+  /** Show/hide a whole viz layer group (F020 §1). */
+  setLayerVisible(layer: DomainLayers, visible: boolean): void {
+    this.getLayer(layer).visible = visible;
+  }
+
+  /** Show/hide the domain box edges, ground grid, and inlet marker (F020). */
+  setDomainBoxVisible(on: boolean): void {
+    this.domainGroup.visible = on;
+  }
+
+  /**
+   * PNG dataURL of the current view (F020 §2). Renders one fresh frame and
+   * reads the drawing buffer synchronously in the same task — no standing
+   * `preserveDrawingBuffer: true` cost (the spec-allowed alternative;
+   * choice recorded in DECISIONS.md §F020.3). Throws `ScreenshotError`
+   * when the GL context is lost.
+   */
+  screenshot(): string {
+    if (this.renderer.getContext().isContextLost()) {
+      throw new ScreenshotError(
+        "WebGL context is lost — cannot capture the viewport",
+      );
+    }
+    this.renderer.render(this.scene, this.camera);
+    return this.renderer.domElement.toDataURL("image/png");
+  }
+
+  /**
+   * Advance the active camera-preset flight (F020). Runs once per frame
+   * before `controls.update()`: idle OrbitControls re-derive their internal
+   * state from the position written here (no pending deltas), so the two
+   * never fight.
+   */
+  private advanceCameraTween(now: number): void {
+    const tween = this.cameraTween;
+    if (!tween) return;
+    const t = Math.min(1, (now - tween.startedMs) / tween.durationMs);
+    const eased = easeInOutCubic(t);
+    const position = new Vector3().setFromSphericalCoords(
+      tween.from.radius + (tween.to.radius - tween.from.radius) * eased,
+      tween.from.phi + (tween.to.phi - tween.from.phi) * eased,
+      tween.from.theta + (tween.to.theta - tween.from.theta) * eased,
+    );
+    this.camera.position.copy(position.add(tween.target));
+    this.camera.lookAt(tween.target);
+    if (t >= 1) this.cameraTween = null;
   }
 
   private resize(): void {

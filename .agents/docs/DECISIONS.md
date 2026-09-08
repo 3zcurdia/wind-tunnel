@@ -6,6 +6,48 @@ stay consistent with `ARCHITECTURE.md`.
 
 ---
 
+## 2026-09-08 — F020 (viewport polish)
+
+1. **Front-preset axis: spec §1 contradicts its own acceptance criterion.**
+   §1 prints `front` = (−18, 0, 0) with "camera on −X axis looking +X", while
+   the acceptance criterion (the binding, testable requirement) demands
+   "Front preset: wind flows left→right on screen". A camera on the −X axis
+   looking +X aligns the flow direction (+X) with the view direction — flow
+   would read *into* the screen, never left-to-right. Smallest consistent
+   change: keep the spec's own tie-breaker sentence ("choose angles so wind
+   reads left-to-right") and the criterion — `front` = camera on the **+Z
+   axis** at distance 18, up +Y, which maps world +X to screen-right.
+   Verified headless (`node /tmp/f020-probe.mjs`, 10/10, Node 26.8.1, real
+   three.js camera math): at `front` the +X unit step projects to NDC
+   (+0.07, 0.00) — purely rightward — while the spec-printed (−18, 0, 0)
+   projects +X to lateral NDC magnitude 0.00e+0 (flow exactly along the
+   view axis). Spherical-lerp tween endpoints land at ≤ 3.1e-15 world
+   units, easeInOutCubic pinned at 0/0.5/1 and monotonic. `top` = +Y axis
+   (view dir (0, −1.0000, −0.0001)) and `iso` = (14, 7, 14) follow §1
+   literally. The tween also keeps `controls.target` frozen (§1: "spherical
+   interpolation around the **current** target") — the "animate target"
+   phrasing in the Context paragraph is satisfied trivially (target lerp is
+   a no-op) and never fights `showModel`'s model-centered target.
+2. **Voxel debug toggle ships inert (no occupancy feed in v1).** F019
+   DECISIONS #7 predicted "F020's layer toggle re-feeds" the debug cloud,
+   but F020's Files list sanctions only `SceneManager.ts`, `ViewToolbar.tsx`,
+   `ControlPanel.tsx`, `SimulationContext.tsx`, `page.tsx` — the feed path
+   (`SimEngine` occupancy accessor + a `useSimulation` pipeline call) is
+   outside it, and the spec's own §1 marks `setVoxelDebugVisible` as
+   "exists from F006 — keep" (no new data path). Smallest consistent change:
+   the toggle is wired exactly as spec'd (context state →
+   `SceneManager.setVoxelDebugVisible`); the view simply has no data until a
+   later feature sanctions an occupancy accessor. All other toggles
+   (particles, smoke, heatmap, domain box) have live data paths and work.
+3. **Screenshot without `preserveDrawingBuffer`.** §2 allows either
+   `preserveDrawingBuffer: true` (standing perf cost) or one extra render
+   into the capture. Chosen: `screenshot()` renders one fresh frame and
+   calls `toDataURL("image/png")` synchronously in the same task — the
+   drawing buffer is still valid at read time, so no renderer option
+   changes and the per-frame cost stays zero. Documented at the method.
+
+---
+
 ## 2026-09-08 — F019 (simulation loop orchestration)
 
 Headless probes below drive the real `--target web` artifact via `initSync`

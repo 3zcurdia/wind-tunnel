@@ -81,6 +81,20 @@ export interface SimulationContextValue {
   setSmokeHistoryLen(n: number): number;
   readonly heatmapEnabled: boolean;
   setHeatmapEnabled(on: boolean): void;
+  /**
+   * Layer visibility state (F020 contract: lives here so F021 presets can
+   * drive it later). SceneManager stays stateless about *why* — the panel
+   * applies these via `getSceneManager()`; smoke/heatmap are applied by the
+   * F019 frame loop instead.
+   */
+  readonly particlesVisible: boolean;
+  setParticlesVisible(on: boolean): void;
+  /** Voxel debug cloud (inert in v1 — no occupancy feed, DECISIONS §F020.2). */
+  readonly voxelDebugVisible: boolean;
+  setVoxelDebugVisible(on: boolean): void;
+  /** Domain box + ground grid + inlet marker. */
+  readonly domainBoxVisible: boolean;
+  setDomainBoxVisible(on: boolean): void;
   /** Engine access for the frame loop (`useSimulation`, F019). Stable. */
   getEngine(): SimEngine;
   /**
@@ -158,6 +172,9 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     SMOKE_HISTORY_DEFAULT,
   );
   const [heatmapEnabled, setHeatmapEnabledState] = useState(true);
+  const [particlesVisible, setParticlesVisibleState] = useState(true);
+  const [voxelDebugVisible, setVoxelDebugVisibleState] = useState(false);
+  const [domainBoxVisible, setDomainBoxVisibleState] = useState(true);
 
   const pendingRef = useRef<FlowConditions | null>(null);
   const timerRef = useRef<number | null>(null);
@@ -373,6 +390,18 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     setHeatmapEnabledState(on);
   }, []);
 
+  const setParticlesVisible = useCallback((on: boolean) => {
+    setParticlesVisibleState(on);
+  }, []);
+
+  const setVoxelDebugVisible = useCallback((on: boolean) => {
+    setVoxelDebugVisibleState(on);
+  }, []);
+
+  const setDomainBoxVisible = useCallback((on: boolean) => {
+    setDomainBoxVisibleState(on);
+  }, []);
+
   const getEngine = useCallback((): SimEngine => engine, [engine]);
 
   const syncRunning = useCallback(() => {
@@ -424,6 +453,12 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
       setSmokeHistoryLen,
       heatmapEnabled,
       setHeatmapEnabled,
+      particlesVisible,
+      setParticlesVisible,
+      voxelDebugVisible,
+      setVoxelDebugVisible,
+      domainBoxVisible,
+      setDomainBoxVisible,
       getEngine,
       notifyRecovery,
       syncRunning,
@@ -449,6 +484,12 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
       setSmokeHistoryLen,
       heatmapEnabled,
       setHeatmapEnabled,
+      particlesVisible,
+      setParticlesVisible,
+      voxelDebugVisible,
+      setVoxelDebugVisible,
+      domainBoxVisible,
+      setDomainBoxVisible,
       getEngine,
       notifyRecovery,
       syncRunning,

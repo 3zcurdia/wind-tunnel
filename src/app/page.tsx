@@ -1,10 +1,12 @@
 "use client";
 
+import { useRef } from "react";
 import { UploadPanel } from "@/components/controls/UploadPanel";
 import { ControlPanel } from "@/components/controls/ControlPanel";
 import { StatsPanel } from "@/components/controls/StatsPanel";
 import { Toasts } from "@/components/ui/Toast";
 import ViewportMount from "@/components/viewport/ViewportMount";
+import { ViewToolbar } from "@/components/viewport/ViewToolbar";
 import { useSimulation } from "@/lib/hooks/useSimulation";
 import { ModelProvider, useModel } from "@/lib/sim/ModelContext";
 import {
@@ -40,9 +42,14 @@ function ControlsRail() {
 
 function ViewportPane() {
   const { ready, error } = useSimulationContext();
+  // F020 fullscreen target: the container, so the toolbar rides along.
+  const viewportRef = useRef<HTMLDivElement | null>(null);
 
   return (
-    <div className="relative min-h-[70vh] flex-1 overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900">
+    <div
+      ref={viewportRef}
+      className="relative min-h-[70vh] flex-1 overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900"
+    >
       <ViewportMount />
       {!ready ? (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-neutral-900/80">
@@ -60,6 +67,7 @@ function ViewportPane() {
           ) : null}
         </div>
       ) : null}
+      <ViewToolbar fullscreenTargetRef={viewportRef} />
     </div>
   );
 }

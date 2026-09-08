@@ -9,7 +9,7 @@
 | Size | S |
 | Skill fit | `UI` |
 | Depends on | F002 (SceneManager), F019 (context) |
-| Status | `[ ]` todo |
+| Status | `[x]` done (2026-09-08; code + headless verification done, 5 visual/browser criteria need a browser — see notes + DECISIONS.md §F020) |
 
 ## Goal
 
@@ -83,13 +83,54 @@ src/app/page.tsx                          (modify) — mount toolbar
 - [ ] Front preset: wind flows left→right on screen; Top: plan view; Iso: default
       3/4 view — each reachable in ~0.6 s with smooth easing; grabbing the mouse
       mid-tween stops it without jumps.
+      **GEOMETRY + MATH VERIFIED HEADLESS, on-screen feel needs a browser:**
+      `node /tmp/f020-probe.mjs` 10/10 against real three.js camera math —
+      `front` (+Z axis, DECISIONS §F020.1: the spec's printed "(−18,0,0)"
+      contradicts this criterion) projects a world +X step to NDC
+      (+0.07, 0.00), i.e. wind reads purely left→right; `top` view dir is
+      (0, −1.0000, −0.0001) (plan view); `iso` == F002's (14, 7, 14);
+      spherical lerp starts/lands within 3.1e-15 of the endpoints;
+      easeInOutCubic pinned at 0/0.5/1 and monotonic. Duration is the 600 ms
+      default constant; cancel-on-interaction is wired to OrbitControls'
+      `start` event, which nulls the tween before the next frame write — the
+      drag resumes from wherever the flight stopped, so no jump by
+      construction. Live easing + grab-cancel need a browser.
 - [ ] Every layer toggle works independently; turning everything off leaves a
       clean empty box; turning heatmap off restores gray model.
+      **MECHANISM IN PLACE, browser clicks outstanding:** five independent
+      context booleans with separate paths — particles →
+      `setLayerVisible("particles")` (group.visible), domain box →
+      `setDomainBoxVisible` (box + grid + inlet now share a group), voxel
+      debug → `setVoxelDebugVisible` (inert in v1: no occupancy feed,
+      DECISIONS §F020.2), smoke/heatmap ride the F019 loop's per-frame
+      application (heatmap off = `overlay.clear()` +
+      `setModelVertexColors(false)` — the F015-verified gray-restore path).
+      Prerendered markup carries all five toggles inside the disabled-until-
+      ready fieldset.
 - [ ] Screenshot downloads a PNG showing exactly the current view (verify pixel
       content, not a blank image).
+      **IMPLEMENTED, pixel check needs a browser:** `screenshot()` renders
+      one fresh frame and calls `toDataURL("image/png")` synchronously in the
+      same task (no `preserveDrawingBuffer` standing cost — DECISIONS
+      §F020.3), throws `ScreenshotError` on context-lost (toolbar toasts the
+      failure), downloads via programmatic `<a download="wind-tunnel.png">`.
 - [ ] Fullscreen expands viewport, ESC exits, camera state preserved.
+      **IMPLEMENTED, browser outstanding:** `requestFullscreen` on the
+      viewport container (the toolbar rides along inside it), ESC exit is
+      browser-native, a `fullscreenchange` listener syncs the button label;
+      F002's ResizeObserver handles the fullscreen resize, and the transition
+      never touches the camera/renderer (state preserved by construction).
 - [ ] Toggling layers has no measurable fps cost when off.
-- [ ] `npm run lint` / `npm run build` pass.
+      **BY CONSTRUCTION, measurement needs a browser:** hidden groups are
+      culled before any GPU submission (three.js skips invisible subtrees);
+      the smoke hidden state is the same path F016/F019 already used.
+      Particle attribute updates continue while hidden (that is the sim path,
+      unchanged) — the budget-relevant GPU work disappears.
+- [x] `npm run lint` / `npm run build` pass.
+      (Verified 2026-09-08: eslint zero errors/warnings; `next build`
+      succeeds; prerendered `index.html` carries the toolbar — "Front" and
+      the screenshot button present — with zero `three` references in the
+      server HTML, so the lazy-chunk split from F002/F003 is intact.)
 
 ## Test plan
 
