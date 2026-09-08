@@ -122,6 +122,9 @@ export class SceneManager {
       this.layers.set(name, group);
       this.scene.add(group);
     }
+    // The particles layer carries the lattice→world map as a parent transform
+    // (F014) — ParticleSystem re-applies the same transform on construction.
+    this.applyLatticeTransform(this.getLayer("particles"));
 
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(this.canvasParent);
@@ -255,6 +258,18 @@ export class SceneManager {
       y * LATTICE_TO_WORLD + WORLD_OFFSET.y,
       z * LATTICE_TO_WORLD + WORLD_OFFSET.z,
     );
+  }
+
+  /**
+   * Apply the lattice→world mapping as a parent `Group` transform (F014):
+   * uniform scale plus the centering offset, matching `latticeToWorld`
+   * exactly. Idempotent — re-applying is a no-op assignment. Viz classes
+   * holding lattice-space positions (e.g. `ParticleSystem`) render under a
+   * group configured this way instead of converting per vertex.
+   */
+  applyLatticeTransform(target: Group): void {
+    target.scale.setScalar(LATTICE_TO_WORLD);
+    target.position.set(WORLD_OFFSET.x, WORLD_OFFSET.y, WORLD_OFFSET.z);
   }
 
   /**

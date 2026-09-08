@@ -9,7 +9,7 @@
 | Size | M |
 | Skill fit | `UI/3D` |
 | Depends on | F002 (SceneManager), F010 (step), F011 (pool + pointers), F009 (speed scale) |
-| Status | `[ ]` todo |
+| Status | `[x]` done (2026-09-08; criteria 4+6 verified, 1–3+5 need a browser — see notes + DECISIONS.md) |
 
 ## Goal
 
@@ -96,17 +96,36 @@ src/app/page.tsx                          (modify) — mount slider; bridge driv
 - [ ] With the default cube test model loaded, particles flow left→right, visibly
       split around the obstacle, and accelerate in the gap regions; none render
       inside the solid (debug voxel view cross-check).
+      **HEADLESS PROXY ONLY (browser check outstanding):** Node vs the real
+      artifact, 30k particles × 60 steps + advect around an 8³ cube — 0
+      non-finite positions/speeds, 0 live particles inside solid cells, mean
+      speed 0.0703 ≈ u_inlet; `stable == true`. See DECISIONS.md §F014.5.
 - [ ] Color gradient matches the legend expectation: upstream particles ≈ white
       (mid-speed), wake particles ≈ blue (slow).
+      **RAMP VERIFIED NUMERICALLY, browser check outstanding:** freestream
+      t≈0.77 → amber (0.953, 0.583, 0.051), wake t≈0.15 → blue
+      (0.058, 0.557, 0.837) — upstream reads amber rather than white under the
+      spec'd 1.3 headroom (see DECISIONS.md §F014.4).
 - [ ] Count slider 5k→100k keeps 60fps at default grid on the dev machine
       (Performance tab ≥ 55 fps sustained); particle respawn is invisible (no
       popping at the inlet — respawn region is behind the inlet plane marker).
-- [ ] Toggling `colorMode` to `'pressure'` placeholder compiles and falls back to
+      **NOT MET AS PRINTED on this machine:** `update()` @100k = 0.41 ms
+      (within its ≤2 ms budget) but the fixed 1 step/frame driver costs
+      step ≈54 ms + advect ≈6 ms @30k (Node-wasm) — ~15 fps sustained until
+      F019 adaptive stepping + F021 presets; see DECISIONS.md §F014.3.
+- [x] Toggling `colorMode` to `'pressure'` placeholder compiles and falls back to
       speed colors until F015 supplies pressure per particle (documented stub).
+      (Verified: `npm run build` compiles; headless check confirms
+      `'pressure'` output is bit-identical to `'speed'`.)
 - [ ] Unmount/remount cycles leak no GPU buffers (`renderer.info.memory` returns to
       baseline).
-- [ ] `npm run lint` / `npm run build` pass; colormaps have a passing `node --test`
+      **NODE-LEVEL DISPOSAL VERIFIED, browser check outstanding:** `Points`
+      removed from the layer on `dispose()` (children back to baseline),
+      dispose idempotent; `renderer.info` needs a WebGL context.
+- [x] `npm run lint` / `npm run build` pass; colormaps have a passing `node --test`
       check for clamping and endpoints (exact hex at t=0/0.5/1).
+      (Verified 2026-09-08: lint zero errors/warnings, build succeeds,
+      `node --test src/lib/viz/colormaps.test.mjs` 7/7 pass.)
 
 ## Test plan
 

@@ -6,6 +6,62 @@ stay consistent with `ARCHITECTURE.md`.
 
 ---
 
+## 2026-09-08 — F014 (particle streamlines)
+
+All numbers below measured headless with Node v26.8.1 against the real
+`--target web` wasm artifact (128×48×48 + 8³ cube at [40..48)×[20..28)² unless
+noted) and the transpiled `ParticleSystem` (three.js needs no DOM for
+`BufferGeometry`/`Points`, so `update()` timing is genuine V8 work).
+
+1. **WASM pool capacity 60k → 100k (slider max needs it).** `voxelBridge`'s
+   `ensureEngine` allocated `init_sim(…, 60000)` (F006 era), but F014 §3 fixes
+   the count slider at 5k–100k and routes changes to `spawn_particles(n)` —
+   targets above 60k would silently clamp to the pool capacity. Smallest
+   consistent change, inside the listed `voxelBridge.ts`: allocate 100k
+   (`PARTICLE_CAPACITY`, shared with the driver's `ParticleSystem` so views
+   and attributes always agree). Cost is ~1.6 MB of pool memory; `runSmokeProbe`
+   behavior is unchanged (still spawns 2 000).
+2. **Monotonic-red hint vs exact stops (test-plan imprecision).** The Test plan
+   suggests asserting a "monotonic red channel across t on speedColor", but the
+   normative §1 stops are not red-monotonic end to end (blue→cyan dips red
+   29→6; amber→red dips 245→220). The §1 hex stops win; the test asserts exact
+   hex at every stop, clamping, and red monotonicity on the genuinely
+   monotonic cyan→amber span [0.25, 0.75] (6→229→245), with the rationale in a
+   comment.
+3. **Frame budget: `update()` fits its ≤ 2 ms budget, the fixed 1 step/frame
+   driver cannot hold 60 fps on this machine — criterion unticked, F019/F021
+   own the fix (F010 pattern).** `ParticleSystem.update` @100k: mean 0.41 ms
+   (positions-only 0.02 ms, color frames 0.96 ms). But the spec'd temporary
+   cadence (`step(1)` + `advect_particles(1.0)` per frame) costs `step(1)` ≈
+   54.1 ms + advect ≈ 6.2 ms @30k (≈ 20 ms extrapolated @100k) — a ~65 ms+
+   frame before rendering, i.e. ~15 fps sustained, on Apple M4 Pro silicon.
+   No deviation attempted (adaptive steps-per-frame is F019's job, presets are
+   F021's); the 55+ fps slider criterion is left unticked for a browser check
+   after those land.
+4. **Upstream renders amber, not white, under the spec'd 1.3 headroom
+   (expectation wording, not a code change).** `speedNorm = [0, 1.3·u_inlet]`
+   puts the freestream at t ≈ 1/1.3 ≈ 0.77 → amber-orange (measured
+   (0.953, 0.583, 0.051)); the white band sits at ≈ 0.65·u_inlet (mildly
+   slowed flow) and the wake at t ≈ 0.15 renders blue (measured
+   (0.058, 0.557, 0.837)). The Detailed-spec formula is implemented verbatim
+   (1.3 documented in `ParticleSystem.update`); the criterion's "≈ white" is
+   read as qualitative (warm freestream, blue wake).
+5. **Headless proxy for the visual criteria (browser checks outstanding).**
+   30k particles, 60 steps + advect around the cube: 0 non-finite positions,
+   0 non-finite speeds, mean speed 0.0703 ≈ u_inlet 0.0737, **0 live particles
+   inside solid cells** (checked against the `occupancy_ptr` snapshot), and
+   `respawn(2000)` refills exactly; `stable == true` throughout. Left→right
+   transit itself needs ~1 800 steps at u ≈ 0.07 (F011 already proved
+   transit); the visual split/acceleration and the voxel cross-check need a
+   browser. Node-level disposal is verified (`Points` removed from the layer,
+   `dispose()` idempotent); the `renderer.info.memory` baseline check needs a
+   browser.
+
+Observed values: `step(1)` 54.12 ms; `advect_particles` 6.23 ms @30k;
+`update()` 0.41 ms @100k; u_lattice 0.073729, τ 0.505 (default operating
+point); cube 729 solids, surface_mode false; freestream color
+(0.953, 0.583, 0.051), wake color (0.058, 0.557, 0.837).
+
 ## 2026-09-08 — F013 (drag coefficient & flow stats)
 
 Fixture for everything below: 128×48×48, `(u_inlet, τ) = (0.08, 0.56)`

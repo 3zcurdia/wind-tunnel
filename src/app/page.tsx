@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { UploadPanel } from "@/components/controls/UploadPanel";
+import { ParticleCountSlider } from "@/components/controls/ParticleCountSlider";
 import { SmokeProbe } from "@/components/controls/SmokeProbe";
 import { VoxelDebugToggle } from "@/components/controls/VoxelDebugToggle";
 import { Panel } from "@/components/ui/Panel";
@@ -12,7 +13,7 @@ import { useModelPipeline } from "@/lib/hooks/useModelPipeline";
 import { parseModel } from "@/lib/mesh/loadModel";
 import { normalizeToDomain } from "@/lib/mesh/normalize";
 import { ModelProvider, useModel } from "@/lib/sim/ModelContext";
-import { voxelizeGeometry } from "@/lib/sim/voxelBridge";
+import { startParticleDriver, voxelizeGeometry } from "@/lib/sim/voxelBridge";
 
 function ModelPipelineHost() {
   useModelPipeline();
@@ -74,11 +75,40 @@ function VoxelPipelineHost() {
   return null;
 }
 
+/**
+ * TEMPORARY particle driver host (F014; folded into `useSimulation` in F019).
+ * Waits for the SceneManager to mount (Viewport registers it asynchronously),
+ * then starts the voxelBridge particle driver; stops + disposes on unmount.
+ */
+function ParticleDriverHost() {
+  useEffect(() => {
+    let stop: (() => void) | null = null;
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      if (cancelled || stop !== null) return;
+      const manager = getSceneManager();
+      if (!manager) return;
+      window.clearInterval(timer);
+      stop = startParticleDriver(manager);
+    }, 100);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      stop?.();
+      stop = null;
+    };
+  }, []);
+
+  return null;
+}
+
 export default function Home() {
   return (
     <ModelProvider>
       <ModelPipelineHost />
       <VoxelPipelineHost />
+      <ParticleDriverHost />
       <div className="flex h-screen flex-col overflow-hidden">
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-neutral-800 px-4">
           <h1 className="text-sm font-semibold tracking-wide">Wind Tunnel</h1>
@@ -96,6 +126,7 @@ export default function Home() {
               <WasmProbe />
               <VoxelDebugToggle />
               <SmokeProbe />
+              <ParticleCountSlider />
             </div>
           </Panel>
           <div className="min-h-[70vh] flex-1 overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900">

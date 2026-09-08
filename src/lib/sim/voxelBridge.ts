@@ -1,4 +1,6 @@
 import type { BufferGeometry } from "three";
+import { ParticleSystem } from "@/lib/viz/ParticleSystem";
+import type { SceneManager } from "@/components/viewport/SceneManager";
 import { DOMAIN } from "@/lib/sim/types";
 import { loadWasm, type WasmApi } from "@/lib/sim/wasm";
 
@@ -19,17 +21,23 @@ export interface VoxelSnapshot {
  * TEMPORARY JS bridge (F006; folded into `SimEngine` in F019).
  *
  * Owns the WASM voxelization path until `SimEngine` exists: ensures a single
- * `init_sim(128, 48, 48, 60000)` and forwards domain-space geometries to
+ * `init_sim(128, 48, 48, PARTICLE_CAPACITY)` and forwards domain-space geometries to
  * `set_mesh`. Buffer views are copied synchronously (never held across
  * allocation-triggering calls, per ARCHITECTURE.md §5).
  */
 let initPromise: Promise<WasmApi> | null = null;
 
+/**
+ * WASM particle-pool capacity (F014: sized for the particle-count slider max
+ * of 100k; the F006-era 60k could not back the top of the range).
+ */
+const PARTICLE_CAPACITY = 100000;
+
 function ensureEngine(): Promise<WasmApi> {
   if (!initPromise) {
     initPromise = (async () => {
       const api = await loadWasm();
-      api.init_sim(DOMAIN.nx, DOMAIN.ny, DOMAIN.nz, 60000);
+      api.init_sim(DOMAIN.nx, DOMAIN.ny, DOMAIN.nz, PARTICLE_CAPACITY);
       return api;
     })().catch((err: unknown) => {
       // Never cache a rejected promise: the next call retries fresh.
@@ -100,9 +108,17 @@ type ParticleWasmApi = WasmApi & {
   reset_flow(): void;
   step(n: number): void;
   spawn_particles(count: number): void;
+  respawn(n: number): number;
   advect_particles(dt: number): void;
+  particles_ptr(): number;
   speeds_ptr(): number;
   active_particle_count(): number;
+};
+
+/** Structural view of the wasm-bindgen `LatticeParams` return (F009). */
+type LatticeParamsLike = {
+  readonly u_lattice: number;
+  free(): void;
 };
 
 /**
@@ -116,7 +132,7 @@ type PressureWasmApi = ParticleWasmApi & {
     viscosityPas: number,
     domainLengthM: number,
     charLengthM: number,
-  ): unknown;
+  ): LatticeParamsLike;
   pressure_anchors(): {
     p_min_pa: number;
     p_max_pa: number;
@@ -176,5 +192,128 @@ export async function runSmokeProbe(): Promise<SmokeProbeResult> {
     pMinPa: anchors.p_min_pa,
     pMaxPa: anchors.p_max_pa,
     qRefPa: anchors.q_ref_pa,
+  };
+}
+
+// ── TEMPORARY particle-streamlines driver (F014; deleted in F019) ──────────
+// Until `SimEngine` exists, this section owns the live particle loop: one
+// `ParticleSystem` on the SceneManager `particles` layer, stepped from
+// `SceneManager.onFrame`. `ParticleSystem` itself stays driver-agnostic (it
+// only receives typed-array views — never imports wasm modules).
+
+export const PARTICLE_COUNT_MIN = 5000;
+export const PARTICLE_COUNT_MAX = 100000;
+export const PARTICLE_COUNT_STEP = 5000;
+export const PARTICLE_COUNT_DEFAULT = 30000;
+
+/** Top-up bound per frame (F014 §4): keeps respawn cost bounded. */
+const RESPAWN_PER_FRAME_MAX = 2000;
+
+/**
+ * Speed-ramp headroom (F014 §2): the caller-side `speedNorm` max is
+ * `1.3 × u_inlet` in lattice units — gap-accelerated particles outrun the
+ * freestream, and the headroom keeps them on-scale instead of compressing
+ * the whole freestream to mid-ramp. F019 computes the same anchors.
+ */
+const SPEED_NORM_HEADROOM = 1.3;
+
+let particleTarget = PARTICLE_COUNT_DEFAULT;
+/** True once the driver primed conditions + flow + the initial spawn. */
+let particlePrimed = false;
+/** Cached inlet lattice speed feeding `speedNorm` (read once at prime). */
+let inletULattice = 0.05;
+
+export function getParticleTargetCount(): number {
+  return particleTarget;
+}
+
+/**
+ * TEMPORARY count control backend (F014 §3; relocated by F018/F019).
+ * Clamps to the 5k–100k slider range, stores the target for the frame
+ * top-up, and reseeds the pool via destructive `spawn_particles`.
+ */
+export async function setParticleCount(count: number): Promise<number> {
+  const stepped = Math.round(count / PARTICLE_COUNT_STEP) * PARTICLE_COUNT_STEP;
+  const clamped = Math.min(
+    PARTICLE_COUNT_MAX,
+    Math.max(PARTICLE_COUNT_MIN, stepped),
+  );
+  particleTarget = clamped;
+  const api = (await ensureEngine()) as ParticleWasmApi;
+  api.spawn_particles(clamped);
+  return clamped;
+}
+
+/**
+ * TEMPORARY frame driver (F014 §4). Creates the `ParticleSystem`, primes the
+ * engine once (default 15 m/s sea-level operating point — mirrors
+ * `runSmokeProbe` — then `reset_flow` + initial spawn), and subscribes to
+ * `SceneManager.onFrame`. Each frame: `step(1)` + `advect_particles(1.0)`
+ * (fixed cadence of 1 step/frame — F019 owns adaptive timing, do not tune
+ * here), top-up respawn when `active < target × 0.98` (≤ 2 000/frame), then
+ * fresh zero-copy views into `ParticleSystem.update` (re-fetched every
+ * frame, never held across calls, per ARCHITECTURE.md §5).
+ *
+ * Returns a stop function that unsubscribes and disposes GPU resources.
+ * Safe under StrictMode remount: stopping then starting reuses the primed
+ * engine without resetting the developed flow.
+ */
+export function startParticleDriver(manager: SceneManager): () => void {
+  const system = new ParticleSystem(
+    manager.getLayer("particles"),
+    PARTICLE_CAPACITY,
+  );
+  const speedNorm = { min: 0, max: SPEED_NORM_HEADROOM * inletULattice };
+  let stopped = false;
+  let api: PressureWasmApi | null = null;
+
+  const unsubscribe = manager.onFrame(() => {
+    if (stopped || api === null) return;
+    api.step(1);
+    api.advect_particles(1.0);
+    const active = api.active_particle_count();
+    if (active < particleTarget * 0.98) {
+      api.respawn(Math.min(particleTarget - active, RESPAWN_PER_FRAME_MAX));
+    }
+    const count = Math.min(api.active_particle_count(), PARTICLE_CAPACITY);
+    const posPtr = api.particles_ptr();
+    const spdPtr = api.speeds_ptr();
+    if (posPtr === 0 || spdPtr === 0) return;
+    const positions = new Float32Array(
+      api.memory.buffer,
+      posPtr,
+      PARTICLE_CAPACITY * 3,
+    );
+    const speeds = new Float32Array(api.memory.buffer, spdPtr, PARTICLE_CAPACITY);
+    system.update(positions, speeds, count, "speed", speedNorm);
+  });
+
+  void (async () => {
+    try {
+      const engine = (await ensureEngine()) as PressureWasmApi;
+      if (stopped) return;
+      if (!particlePrimed) {
+        particlePrimed = true;
+        const params = engine.set_conditions(15.0, 101.325, 1.81e-5, 1.0, 0.25);
+        const u = params.u_lattice;
+        params.free();
+        if (Number.isFinite(u) && u > 0) {
+          inletULattice = u;
+          speedNorm.max = SPEED_NORM_HEADROOM * u;
+        }
+        engine.reset_flow();
+        engine.spawn_particles(particleTarget);
+      }
+      api = engine;
+    } catch {
+      // Engine load failure surfaces via the existing probes/pipeline error
+      // states; the driver simply stays idle (F019 replaces all of this).
+    }
+  })();
+
+  return () => {
+    stopped = true;
+    unsubscribe();
+    system.dispose();
   };
 }
