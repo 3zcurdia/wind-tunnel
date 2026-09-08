@@ -261,3 +261,55 @@ Observed values: ρ(101.325 kPa) = 1.204118316 kg/m³; ν = 1.503174543e-5 m²/s
 default lattice triple (U = 15, nx = 128): u = 0.0737288136,
 dt = 3.840042373e-05 s, τ_direct = 0.5000283718 → reported τ = 0.505
 (clamped), Re = 249472.03.
+
+## 2026-09-08 — F010 (step driver, stability monitor & perf budget)
+
+1. **`std::time::Instant` traps on wasm32-unknown-unknown — the spec's
+   assumption was wrong; fallback redesigned with no new dependencies.** The
+   spec directs `Instant` as "supported under wasm32-unknown-unknown (verified
+   in F003's toolchain…)". F003's spec and §F003 notes above show it only ever
+   called `ping()` — no clock was ever exercised there. A scratch
+   `wasm-pack --target nodejs` probe (rustc 1.98.1, wasm-bindgen 0.2.128)
+   calling `Instant::now()` under Node 26 traps with `unreachable`. Shipping
+   that inside `step()` would throw on every frame in the browser, violating
+   CONVENTIONS.md ("panics inside exported functions are forbidden"). The
+   spec's literal fallback (`js_sys::Date::now()`) needs a new crate plus a
+   `wasm/Cargo.toml` edit — both outside this feature's file list, and the
+   spec's Dependencies say "none". Smallest consistent change: a cfg-gated
+   clock in `lib.rs` — `Instant` on native targets (unit tests, benches), and
+   on wasm32 a `performance.now()` host import through the already-present
+   `wasm-bindgen` dependency (no new crates, no Cargo.toml change,
+   `wasm_bindgen` stays confined to `lib.rs`; the import generates a safe
+   wrapper, so no `unsafe` block was needed). Monotonicity makes it strictly
+   better than `Date.now()` for measuring durations. Verified end-to-end: the
+   rebuilt `--target web` artifact under Node 26 reports real timing
+   (`last_step_ms` 0.23 on a 10-batch over 16×8×8, EMA update exact at
+   0.1×last after the first batch) with no trap; `is_stable()`, the ≤ 64
+   clamp, and `reset_flow()` likewise verified through the real artifact.
+2. **`ARCHITECTURE.md` §5 updated for the new ABI surface (its own Forbidden
+   rule requires it).** Added `timing() -> Timing { last_step_ms, avg_step_ms }`
+   and noted the `step(n)` ≤ 64 clamp on the existing `step` line.
+   `is_stable()` was already listed.
+3. **Perf budget MISSED on this machine — recorded, not silently passed.**
+   `cargo test --release -- --ignored --nocapture` (Apple M4 Pro, arm64,
+   rustc 1.98.1, `opt-level = 3 + lto`, 2026-09-08), full production path
+   (ABI `step()` + cube + all BC passes + batch timing):
+   - 128×48×48 + 8³ cube: mean **47.656 ms/step**, p95 48.884 (budget ≤ 4).
+   - 64×24×24 + 4³ cube: mean **5.082 ms/step**, p95 5.267 (target ≤ 0.6).
+   Scaling is ~linear in cells (8× cells → 9.4× time), so this is a high
+   constant, not a blowup. Context: F007 measured 35.5 ms/step for the bare
+   kernel, all-fluid, via direct call; F010 measures the full production path,
+   and the cube's bounce-back pass (every cell scans up to 18 neighbours for
+   solid adjacency) is the main added cost. No optimization attempted here
+   (out of scope; "SIMD intrusions" explicitly deferred by the spec) —
+   mitigation stays with F019 (adaptive steps-per-frame, now fed by real
+   `timing()`) + F021 (quality presets).
+4. **Debug-mode suite cost.** The new `healthy_run_stays_stable` (5 000 debug
+   steps, default grid) takes ~31 min on this machine (~0.38 s/step debug vs
+   ~0.048 s/step release) and passes. The F008 10k-step tests dominate the
+   debug suite the same way (pre-existing). Full verification this feature:
+   `cargo test --release` → 36 passed / 0 failed (446 s, includes all giants);
+   debug → all non-giant tests pass (5.5 s) plus `healthy_run` solo pass; the
+   three F008 giants were verified in release only (the `collide_pass` delta
+   is numerically inert — it only reads ρ/u and writes two state fields on
+   violation — so their debug behaviour is unchanged from F008's sign-off).

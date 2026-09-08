@@ -188,10 +188,12 @@ get_lattice_params() -> LatticeParams
 mass_balance() -> Vec<f64>              // len 2
 
 // ── simulation ───────────────────────────────────────────────────────────
-/// Advance exactly n lattice steps.
+/// Advance exactly n lattice steps (clamped to ≤ 64 per call, F010).
 step(n: u32)
 /// Stability check (cheap): false if any NaN / ρ ≤ 0 detected since last call.
 is_stable() -> bool
+/// Last-batch mean ms per lattice step + EMA (α=0.1) for F019 adaptive stepping (F010).
+timing() -> Timing              // Timing { last_step_ms: f32, avg_step_ms: f32 }
 
 // ── buffers (zero-copy views into wasm linear memory) ───────────────────
 /// Particle pool: xyz triplets, active-first ordering.

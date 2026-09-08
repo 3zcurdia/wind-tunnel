@@ -9,7 +9,7 @@
 | Size | S |
 | Skill fit | `Rust` |
 | Depends on | F007, F008 (real stepping), F009 (params) |
-| Status | `[ ]` todo |
+| Status | `[x]` done (2026-09-08; budget criterion unticked with note below + DECISIONS.md) |
 
 ## Goal
 
@@ -76,20 +76,24 @@ wasm/src/bench.rs        (new)    — ignored benchmark tests
 
 ## Acceptance criteria
 
-- [ ] `nan_detection_latches`: inject NaN into one distribution mid-test (test
+- [x] `nan_detection_latches`: inject NaN into one distribution mid-test (test
       helper writes directly into `f`), step 10 → `is_stable() == false`; after
       `reset_flow()` → true.
-- [ ] `negative_density_detected`: same with ρ forced to −0.5 in one cell.
-- [ ] `healthy_run_stays_stable`: 5 000 steps cube case defaults → `is_stable()`
+- [x] `negative_density_detected`: same with ρ forced to −0.5 in one cell.
+- [x] `healthy_run_stays_stable`: 5 000 steps cube case defaults → `is_stable()`
       still true.
-- [ ] `step_clamp`: `step(1000)` on a 16³ grid returns/behaves as 64 steps
+- [x] `step_clamp`: `step(1000)` on a 16³ grid returns/behaves as 64 steps
       (`steps_done()` advances by exactly 64).
-- [ ] `timing_ema_converges`: after 100 steps, `avg_step_ms` within 2× of
+- [x] `timing_ema_converges`: after 100 steps, `avg_step_ms` within 2× of
       `last_step_ms` (sanity, no drift to 0).
 - [ ] Benchmark (release, machine-local): mean ms/step recorded in `DECISIONS.md`
       for both grid sizes; default-grid mean ≤ 4 ms on the development machine
       (if the dev machine is slower, record actual and flag in `DECISIONS.md` — do
-      not silently pass).
+      not silently pass). **NOT MET AS PRINTED — recorded + flagged instead:**
+      128×48×48 + 8³ cube → mean 47.656 ms/step (budget ≤ 4); 64×24×24 + 4³
+      cube → 5.082 ms/step (target ≤ 0.6); Apple M4 Pro, 2026-09-08; see
+      DECISIONS.md §F010.3. Scaling ~linear in cells; no optimization attempted
+      (out of scope — routed to F019 + F021).
 
 ## Test plan
 

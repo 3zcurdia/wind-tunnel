@@ -2,6 +2,8 @@ use std::cell::RefCell;
 use wasm_bindgen::prelude::*;
 
 mod boundaries;
+#[cfg(test)]
+mod bench;
 mod lbm;
 mod units;
 mod voxel;
@@ -14,6 +16,9 @@ mod voxel;
 /// `nx*ny*nz` `f32`, two buffers, allocated once in `init_sim`.
 /// `mass_in_flux` / `mass_out_flux` accumulate the F008 inlet/outlet mass
 /// exchange (lattice units); `reset_flow` zeroes them.
+/// `stable` / `last_unstable_step` are the F010 latched stability monitor
+/// (set by the collide pass, cleared only by `reset_state_flow`);
+/// `last_step_ms` / `avg_step_ms` are the F010 per-batch timing signals.
 pub struct SimState {
     pub(crate) nx: usize,
     pub(crate) ny: usize,
@@ -56,6 +61,17 @@ pub struct SimState {
     pub(crate) re: f64,
     /// True when the last conversion did not converge into the τ envelope.
     pub(crate) conditions_unstable: bool,
+    // ── F010 step driver: stability latch + batch timing ────────────────
+    /// Latched stability flag: false once the collide pass observes ρ ≤ 0
+    /// or a non-finite moment on its strided check; cleared only by reset.
+    pub(crate) stable: bool,
+    /// Completed-step count when the latch first tripped (0-based index of
+    /// the failing step).
+    pub(crate) last_unstable_step: u64,
+    /// Mean wall ms per lattice step of the last `step(n)` batch.
+    pub(crate) last_step_ms: f32,
+    /// EMA (α = 0.1) of `last_step_ms` across `step(n)` calls, for F019.
+    pub(crate) avg_step_ms: f32,
 }
 
 impl SimState {
@@ -83,6 +99,10 @@ impl SimState {
             dt_phys: 0.0,
             re: 0.0,
             conditions_unstable: false,
+            stable: true,
+            last_unstable_step: 0,
+            last_step_ms: 0.0,
+            avg_step_ms: 0.0,
         }
     }
 
@@ -112,6 +132,10 @@ impl SimState {
             dt_phys: 0.0,
             re: 0.0,
             conditions_unstable: false,
+            stable: true,
+            last_unstable_step: 0,
+            last_step_ms: 0.0,
+            avg_step_ms: 0.0,
         };
         lbm::reset_state_flow(&mut s);
         s
@@ -323,9 +347,20 @@ pub fn reset_flow() {
 
 /// Advance exactly `n` lattice timesteps with the F008 wind-tunnel BC set
 /// (inlet / outlet / free-slip walls / obstacle bounce-back).
-/// No allocation inside the loop. Never panics.
+/// `n` is clamped to ≤ 64 per call (F010 — defends against runaway loops;
+/// JS must respect this). No allocation inside the loop. Never panics.
+///
+/// F010: each call records batch timing (see [`timing`]) and the collide pass
+/// latches `stable = false` on the first ρ ≤ 0 / non-finite observation
+/// (strided check, every 7th cell). Steps still execute while unstable —
+/// F019 stops calling `step` on instability.
 #[wasm_bindgen]
 pub fn step(n: u32) {
+    let n = n.min(64);
+    if n == 0 {
+        return;
+    }
+    let t0 = batch_start();
     STATE.with(|s| {
         let mut state = s.borrow_mut();
         for _ in 0..n {
@@ -333,6 +368,107 @@ pub fn step(n: u32) {
             state.steps = state.steps.wrapping_add(1);
         }
     });
+    // Mean ms per lattice step within this batch. `.max(0.0)` also maps a
+    // hypothetical non-finite clock read to 0 instead of poisoning the EMA.
+    let per_step_ms = (batch_elapsed_ms(&t0) / f64::from(n)).max(0.0);
+    STATE.with(|s| {
+        let mut state = s.borrow_mut();
+        state.last_step_ms = per_step_ms as f32;
+        state.avg_step_ms += (state.last_step_ms - state.avg_step_ms) * 0.1;
+    });
+}
+
+/// Stability check (F010, cheap field read): false once the collide pass has
+/// observed ρ ≤ 0 or a non-finite moment since the last `reset_flow` /
+/// `init_sim`. Reporting never resets the latch — only `reset_flow()` does.
+/// Never panics.
+#[wasm_bindgen]
+pub fn is_stable() -> bool {
+    STATE.with(|s| s.borrow().stable)
+}
+
+/// Batch timing snapshot for F019's adaptive steps-per-frame loop.
+#[wasm_bindgen]
+pub struct Timing {
+    pub(crate) last_step_ms: f32,
+    pub(crate) avg_step_ms: f32,
+}
+
+#[wasm_bindgen]
+impl Timing {
+    /// Mean wall ms per lattice step of the last `step(n)` batch.
+    #[wasm_bindgen(getter)]
+    pub fn last_step_ms(&self) -> f32 {
+        self.last_step_ms
+    }
+    /// EMA (α = 0.1) of `last_step_ms` across `step(n)` calls.
+    #[wasm_bindgen(getter)]
+    pub fn avg_step_ms(&self) -> f32 {
+        self.avg_step_ms
+    }
+}
+
+/// Last-batch timing snapshot (F010). Cheap enough to poll per frame; F019
+/// consumes it for adaptive steps-per-frame. Never panics.
+#[wasm_bindgen]
+pub fn timing() -> Timing {
+    STATE.with(|s| {
+        let state = s.borrow();
+        Timing {
+            last_step_ms: state.last_step_ms,
+            avg_step_ms: state.avg_step_ms,
+        }
+    })
+}
+
+// ── F010: cross-platform batch clock ────────────────────────────────────
+// Native (unit tests, benches): `std::time::Instant` — monotonic, ns
+// resolution. wasm32-unknown-unknown: std's clock traps at runtime
+// (`unreachable`, verified 2026-09-08 with a wasm-pack/Node probe — the
+// spec's "verified in F003's toolchain" assumption was wrong; F003 only ever
+// called `ping()`), so the browser path imports the monotonic
+// `performance.now()` host function through the existing `wasm-bindgen`
+// dependency instead: no new crates (the spec's Dependencies say "none", and
+// `wasm/Cargo.toml` is outside this feature's file list), and monotonicity
+// makes it strictly better than the spec's `Date.now()` fallback sketch for
+// measuring durations. Both arms expose milliseconds as f64; see
+// DECISIONS.md 2026-09-08 (F010).
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = performance, js_name = now)]
+    fn performance_now() -> f64;
+}
+
+/// Opaque start stamp for one `step(n)` batch.
+#[cfg(not(target_arch = "wasm32"))]
+type BatchClock = std::time::Instant;
+/// Opaque start stamp for one `step(n)` batch (ms, `performance.now()`).
+#[cfg(target_arch = "wasm32")]
+type BatchClock = f64;
+
+#[cfg(not(target_arch = "wasm32"))]
+fn batch_start() -> BatchClock {
+    std::time::Instant::now()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn batch_start() -> BatchClock {
+    // Plain call (no `unsafe`): wasm-bindgen generates a safe wrapper for
+    // this pure host import. `performance.now` exists in every browser, the
+    // app's only runtime (ARCHITECTURE.md §1).
+    performance_now()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn batch_elapsed_ms(t0: &BatchClock) -> f64 {
+    t0.elapsed().as_secs_f64() * 1000.0
+}
+
+#[cfg(target_arch = "wasm32")]
+fn batch_elapsed_ms(t0: &BatchClock) -> f64 {
+    // Same safe wasm-bindgen import as `batch_start` above.
+    performance_now() - *t0
 }
 
 /// Completed timesteps since the last `reset_flow` / `init_sim`.
@@ -488,5 +624,153 @@ mod tests {
         clear_mesh();
         assert_eq!(occupancy_len(), 16 * 16 * 16);
         assert!(STATE.with(|s| s.borrow().occupancy.iter().all(|&c| c == 0)));
+    }
+
+    // ── F010: step driver, stability & timing ────────────────────────────
+
+    /// Fill an axis-aligned solid box on the thread-local ABI state and freeze
+    /// the fresh solids at rest equilibrium (mirrors `set_mesh` retuning,
+    /// without touching the flow elsewhere).
+    fn place_box_state(
+        x0: usize,
+        x1: usize,
+        y0: usize,
+        y1: usize,
+        z0: usize,
+        z1: usize,
+    ) {
+        STATE.with(|s| {
+            let mut state = s.borrow_mut();
+            let (nx, ny) = (state.nx, state.ny);
+            for z in z0..z1 {
+                for y in y0..y1 {
+                    for x in x0..x1 {
+                        state.occupancy[x + nx * (y + ny * z)] = 1;
+                    }
+                }
+            }
+            state.solid_count = state.occupancy.iter().filter(|&&o| o != 0).count();
+            lbm::retune_solid_cells(&mut state, &[]);
+        });
+    }
+
+    /// Injecting NaN into one distribution latches `is_stable() == false`
+    /// within 10 steps; `reset_flow()` clears the latch.
+    #[test]
+    fn nan_detection_latches() {
+        init_sim(16, 8, 8, 0);
+        assert!(is_stable(), "fresh sim must report stable");
+        // The stride-7 monitor watches cells 0, 7, 14, … — cell 14 (x = 14,
+        // interior in x) is observed on the very first collide pass.
+        STATE.with(|s| {
+            let mut state = s.borrow_mut();
+            let n = state.nx * state.ny * state.nz;
+            state.f[3 * n + 14] = f32::NAN;
+        });
+        step(10);
+        assert!(
+            !is_stable(),
+            "NaN injection must latch instability within 10 steps"
+        );
+        assert!(
+            !STATE.with(|s| lbm::verify_stability_full(&s.borrow())),
+            "full-grid verification must agree on the NaN field"
+        );
+        reset_flow();
+        assert!(is_stable(), "reset_flow must clear the stability latch");
+        assert!(
+            STATE.with(|s| lbm::verify_stability_full(&s.borrow())),
+            "field must verify healthy after reset_flow"
+        );
+    }
+
+    /// Forcing ρ = −0.5 in one cell latches instability the same way.
+    #[test]
+    fn negative_density_detected() {
+        init_sim(16, 8, 8, 0);
+        assert!(is_stable(), "fresh sim must report stable");
+        STATE.with(|s| {
+            let mut state = s.borrow_mut();
+            let n = state.nx * state.ny * state.nz;
+            // Σρ = −0.5 at strided interior cell 7 (7 % 7 == 0); f32 rounding
+            // keeps the sum within ~1e-9 of −0.5, still firmly ≤ 0.
+            let share = (-0.5f64 / 19.0) as f32;
+            for i in 0..19 {
+                state.f[i * n + 7] = share;
+            }
+        });
+        step(10);
+        assert!(
+            !is_stable(),
+            "negative density must latch instability within 10 steps"
+        );
+        reset_flow();
+        assert!(is_stable(), "reset_flow must clear the stability latch");
+    }
+
+    /// 5 000 steps on the default-grid cube case at default params stay
+    /// stable (and advance the step counter exactly).
+    #[test]
+    fn healthy_run_stays_stable() {
+        init_sim(128, 48, 48, 0);
+        // 8³ cube at the ARCH §3 placement center (mirrors the F008 fixture).
+        let (nx, ny, nz) = (128usize, 48usize, 48usize);
+        let cx = (0.35 * nx as f64) as usize;
+        let (cy, cz) = (ny / 2, nz / 2);
+        place_box_state(cx - 4, cx + 4, cy - 4, cy + 4, cz - 4, cz + 4);
+        reset_flow();
+        assert!(is_stable(), "fresh cube case must report stable");
+        // 78 × 64 + 8 = 5 000 (also exercises the ≤ 64 clamp path per call).
+        for _ in 0..78 {
+            step(64);
+        }
+        step(8);
+        assert_eq!(steps_done(), 5000, "5000 lattice steps must complete");
+        assert!(is_stable(), "healthy 5000-step cube run must stay stable");
+        assert!(
+            STATE.with(|s| lbm::verify_stability_full(&s.borrow())),
+            "full-grid verification must agree on the healthy run"
+        );
+    }
+
+    /// `step(n > 64)` executes exactly 64 steps.
+    #[test]
+    fn step_clamp() {
+        init_sim(16, 16, 16, 0);
+        step(1000);
+        assert_eq!(steps_done(), 64, "step(1000) must behave as 64 steps");
+        step(64);
+        assert_eq!(steps_done(), 128, "step(64) passes through unclamped");
+        step(0);
+        assert_eq!(steps_done(), 128, "step(0) must be a no-op");
+        assert!(is_stable(), "small healthy run must stay stable");
+    }
+
+    /// After 100 single-step batches the EMA has converged onto the
+    /// last-batch reading (sanity: no drift to 0, no stall).
+    #[test]
+    fn timing_ema_converges() {
+        init_sim(16, 8, 8, 0);
+        for _ in 0..100 {
+            step(1);
+        }
+        let t = timing();
+        assert!(
+            t.last_step_ms() > 0.0,
+            "last_step_ms must be positive (got {})",
+            t.last_step_ms()
+        );
+        assert!(
+            t.avg_step_ms() > 0.0,
+            "avg_step_ms must be positive (got {})",
+            t.avg_step_ms()
+        );
+        let ratio = f64::from(t.avg_step_ms()) / f64::from(t.last_step_ms());
+        assert!(
+            (0.5..=2.0).contains(&ratio),
+            "avg_step_ms ({}) must be within 2× of last_step_ms ({})",
+            t.avg_step_ms(),
+            t.last_step_ms()
+        );
     }
 }

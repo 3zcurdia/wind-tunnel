@@ -179,6 +179,11 @@ pub(crate) fn reset_state_flow(state: &mut SimState) {
     state.steps = 0;
     state.mass_in_flux = 0.0;
     state.mass_out_flux = 0.0;
+    // F010: a fresh field is stable by construction; the latch clears here
+    // (and only here — `is_stable()` never resets it). Batch timing is host
+    // state, not flow state, so the EMA intentionally survives a reset.
+    state.stable = true;
+    state.last_unstable_step = 0;
 }
 
 /// Set every solid cell's 19 populations in both buffers to rest equilibrium,
@@ -340,6 +345,15 @@ pub(crate) fn stream_and_collide_periodic(state: &mut SimState) {
 }
 
 /// Shared BGK collision pass (`f` → `f_next`; solids copied through).
+///
+/// F010 strided stability monitor: every 7th cell (deterministic stride) is
+/// validated here while its `ρ, u` are already in registers (cheap, in-cache):
+/// `ρ ≤ 0` or any non-finite moment latches `state.stable = false` with
+/// `state.last_unstable_step = state.steps` (completed-step count when the
+/// violation was observed, i.e. the 0-based index of the failing step). The
+/// latch never auto-clears — only `reset_state_flow` restores it — and the
+/// pass keeps colliding afterwards (F019 decides recovery; Rust never
+/// auto-resets).
 fn collide_pass(state: &mut SimState) {
     let n = state.nx * state.ny * state.nz;
     if n == 0 || state.f.len() != 19 * n || state.f_next.len() != 19 * n {
@@ -353,6 +367,7 @@ fn collide_pass(state: &mut SimState) {
     let occ = &state.occupancy;
     let f = &state.f;
     let f_next = &mut state.f_next;
+    let mut saw_unstable = false;
     for c in 0..n {
         if occ[c] != 0 {
             for i in 0..19 {
@@ -361,6 +376,15 @@ fn collide_pass(state: &mut SimState) {
             continue;
         }
         let (rho, ux, uy, uz) = macroscopic(f, n, c);
+        if c % 7 == 0
+            && (!rho.is_finite()
+                || rho <= 0.0
+                || !ux.is_finite()
+                || !uy.is_finite()
+                || !uz.is_finite())
+        {
+            saw_unstable = true;
+        }
         if !rho.is_finite() || rho <= 0.0 {
             for i in 0..19 {
                 f_next[i * n + c] = f[i * n + c];
@@ -375,6 +399,11 @@ fn collide_pass(state: &mut SimState) {
             let f_old = f[i * n + c] as f64;
             f_next[i * n + c] = (f_old - (f_old - feq) * omega) as f32;
         }
+    }
+    // First latching wins: never overwrite an earlier `last_unstable_step`.
+    if saw_unstable && state.stable {
+        state.stable = false;
+        state.last_unstable_step = state.steps;
     }
 }
 
@@ -435,6 +464,29 @@ fn stream_pass_wind_tunnel(state: &mut SimState) {
             }
         }
     }
+}
+
+/// Full-grid stability scan (F010): every cell's `ρ` finite and `> 0`, every
+/// velocity component finite (solids included — their frozen populations are
+/// read the same way). Pure query: never touches the latch. Used by tests;
+/// ~free at these sizes, never called per frame. Degenerate (empty or
+/// mis-sized) buffers report healthy — there is nothing to observe.
+#[cfg(test)]
+pub(crate) fn verify_stability_full(state: &SimState) -> bool {
+    let n = state.nx * state.ny * state.nz;
+    if n == 0 || state.f.len() != 19 * n {
+        return true;
+    }
+    for c in 0..n {
+        let (rho, ux, uy, uz) = macroscopic(&state.f, n, c);
+        if !rho.is_finite() || rho <= 0.0 {
+            return false;
+        }
+        if !ux.is_finite() || !uy.is_finite() || !uz.is_finite() {
+            return false;
+        }
+    }
+    true
 }
 
 #[cfg(test)]
