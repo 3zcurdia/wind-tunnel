@@ -9,7 +9,7 @@
 | Size | M |
 | Skill fit | `Rust` |
 | Depends on | F007/F008 (flow field), F006 (occupancy) |
-| Status | `[ ]` todo |
+| Status | `[x]` done |
 
 ## Goal
 
@@ -105,24 +105,24 @@ src/app/page.tsx           (modify) — mount probe
 
 ## Acceptance criteria
 
-- [ ] `sample_at_cell_center_exact`: uniform flow field → sample at any cell center
+- [x] `sample_at_cell_center_exact`: uniform flow field → sample at any cell center
       returns (u_inlet,0,0) ± 1e-6.
-- [ ] `sample_trilinear_interpolates`: constructed linear shear field (u varying
+- [x] `sample_trilinear_interpolates`: constructed linear shear field (u varying
       linearly in y across two cells) → sample at fractional y reproduces the linear
       profile ± 1e-5 (test derives expected by hand).
-- [ ] `sample_in_solid_is_zero` / `sample_upstream_is_inlet` / `sample_downstream_is_zero`.
-- [ ] `particles_transit_domain`: 1 000 particles, uniform field u=0.1, dt=1, 100
+- [x] `sample_in_solid_is_zero` / `sample_upstream_is_inlet` / `sample_downstream_is_zero`.
+- [x] `particles_transit_domain`: 1 000 particles, uniform field u=0.1, dt=1, 100
       advect calls → `active_particle_count() == 0` (all exited +X) and no NaNs ever
       written (positions buffer checked over the run).
-- [ ] `particles_deflect_around_cube`: cube case (F008), 2 000 particles, 200 steps
+- [x] `particles_deflect_around_cube`: cube case (F008), 2 000 particles, 200 steps
       → ≥ 60 % reach x > 0.8·nx without having entered a solid (spot-check: no
       particle position inside occupancy=1 at kill time), and their mean path y/z
       spread increased (deflection proxy).
-- [ ] `trapped_particles_die`: particle seeded in a recirculation pocket (behind
+- [x] `trapped_particles_die`: particle seeded in a recirculation pocket (behind
       cube at the wake centerline) is gone after ~200 steps (stall counter works).
-- [ ] `respawn_refills`: after mass exit, `respawn(500)` adds up to 500 (capacity
+- [x] `respawn_refills`: after mass exit, `respawn(500)` adds up to 500 (capacity
       permitting) and count returns accordingly.
-- [ ] `no_allocation_in_advect`: review assertion + test running 1 000 advects on
+- [x] `no_allocation_in_advect`: review assertion + test running 1 000 advects on
       16³ grid completes in < 50 ms release (catches accidental allocs via timing
       heuristic).
 

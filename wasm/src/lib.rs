@@ -1,10 +1,12 @@
 use std::cell::RefCell;
 use wasm_bindgen::prelude::*;
 
+mod advection;
 mod boundaries;
 #[cfg(test)]
 mod bench;
 mod lbm;
+mod particles;
 mod units;
 mod voxel;
 
@@ -19,6 +21,9 @@ mod voxel;
 /// `stable` / `last_unstable_step` are the F010 latched stability monitor
 /// (set by the collide pass, cleared only by `reset_state_flow`);
 /// `last_step_ms` / `avg_step_ms` are the F010 per-batch timing signals.
+/// `particles` is the F011 fixed-capacity pool (buffers allocated once in
+/// `init_sim`, never reallocated — pointers stay valid until the next
+/// `init_sim`, stricter than the §5 general rule).
 pub struct SimState {
     pub(crate) nx: usize,
     pub(crate) ny: usize,
@@ -28,9 +33,10 @@ pub struct SimState {
     pub(crate) mesh_vertices: Vec<f32>,
     pub(crate) vertex_count: usize,
     pub(crate) surface_mode: bool,
-    /// Reserved for the F011 particle pool (allocated then).
-    #[allow(dead_code)]
-    pub(crate) particle_capacity: usize,
+    /// Fixed-capacity particle pool (F011). Allocated in `fresh` from the
+    /// `init_sim` capacity argument; `spawn`/`respawn`/`advect` only write
+    /// within it.
+    pub(crate) particles: particles::ParticlePool,
     // ── F007 flow state ────────────────────────────────────────────
     /// SoA populations, 19 planes × cells (result always lives in `f`).
     pub(crate) f: Vec<f32>,
@@ -85,7 +91,7 @@ impl SimState {
             mesh_vertices: Vec::new(),
             vertex_count: 0,
             surface_mode: false,
-            particle_capacity: 0,
+            particles: particles::ParticlePool::new(0),
             f: Vec::new(),
             f_next: Vec::new(),
             tau: 0.56,
@@ -118,7 +124,7 @@ impl SimState {
             mesh_vertices: Vec::new(),
             vertex_count: 0,
             surface_mode: false,
-            particle_capacity,
+            particles: particles::ParticlePool::new(particle_capacity),
             f: vec![0.0f32; planes],
             f_next: vec![0.0f32; planes],
             tau: 0.56,
@@ -486,6 +492,85 @@ pub fn mass_balance() -> Vec<f64> {
         let state = s.borrow();
         vec![state.mass_in_flux, state.mass_out_flux]
     })
+}
+
+// ── F011: velocity sampling & particle advection ABI ────────────────────
+// Pool buffers are allocated once in `init_sim` and never reallocated, so
+// `particles_ptr` / `speeds_ptr` stay valid until the next `init_sim`
+// (stricter than the §5 general rule). `reset_flow` leaves the pool
+// untouched; `set_mesh`/`clear_mesh` leave it too (particles caught inside
+// fresh solids die on the next `advect_particles`).
+
+/// Batch velocity sampling: `points` holds `n×3` domain-space coords, `out`
+/// receives `n×3` velocities (trilinear, see `advection.rs` for the
+/// convention). Mismatched lengths write nothing. Never panics.
+#[wasm_bindgen]
+pub fn sample_velocity_batch(points: &[f32], out: &mut [f32]) {
+    STATE.with(|s| {
+        advection::sample_velocity_batch(&s.borrow(), points, out);
+    });
+}
+
+/// (Re)seed `count` particles at the inlet plane. Clears the pool first
+/// (deterministic cloud — same seed every call). `alive` never exceeds the
+/// `init_sim` capacity. Never panics.
+#[wasm_bindgen]
+pub fn spawn_particles(count: u32) {
+    STATE.with(|s| {
+        particles::spawn(&mut s.borrow_mut(), count);
+    });
+}
+
+/// Append up to `n` new inlet particles without clearing; returns how many
+/// were added (0 when the pool is full). F014 calls this each frame to
+/// recycle. Never panics.
+#[wasm_bindgen]
+pub fn respawn(n: u32) -> u32 {
+    STATE.with(|s| particles::respawn(&mut s.borrow_mut(), n))
+}
+
+/// Integrate all alive particles one lattice-Δt substep (RK1). Kills those
+/// exiting the domain, entering solids, or trapped (see `particles.rs`).
+/// No allocation. Never panics.
+#[wasm_bindgen]
+pub fn advect_particles(dt_lattice: f32) {
+    STATE.with(|s| {
+        advection::advect(&mut s.borrow_mut(), dt_lattice);
+    });
+}
+
+/// Pointer to the particle pool positions (`capacity×3` `f32`, xyz triplets,
+/// active-first). Stable until the next `init_sim`. Null when empty.
+#[wasm_bindgen]
+pub fn particles_ptr() -> *const f32 {
+    STATE.with(|s| {
+        let state = s.borrow();
+        if state.particles.capacity() == 0 {
+            std::ptr::null()
+        } else {
+            state.particles.positions().as_ptr()
+        }
+    })
+}
+
+/// Pointer to the per-particle lattice speeds (`capacity` `f32`, parallel to
+/// the positions above, active-first). Same stability rule. Null when empty.
+#[wasm_bindgen]
+pub fn speeds_ptr() -> *const f32 {
+    STATE.with(|s| {
+        let state = s.borrow();
+        if state.particles.capacity() == 0 {
+            std::ptr::null()
+        } else {
+            state.particles.speeds().as_ptr()
+        }
+    })
+}
+
+/// Number of currently alive (active-first) particles.
+#[wasm_bindgen]
+pub fn active_particle_count() -> u32 {
+    STATE.with(|s| s.borrow().particles.alive() as u32)
 }
 
 /// Store lattice parameters, clamped to the §3 stability envelope

@@ -89,3 +89,55 @@ export async function voxelizeGeometry(
   const snapshot = await readOccupancy();
   return { ...result, ...snapshot };
 }
+
+/**
+ * Structural view of the F011 particle ABI. `WasmApi` (`wasm.ts`) is owned by
+ * `SimEngine` in F019 and intentionally stays at the F006 surface until then;
+ * this local extension types the calls the smoke probe needs without touching
+ * that file.
+ */
+type ParticleWasmApi = WasmApi & {
+  reset_flow(): void;
+  step(n: number): void;
+  spawn_particles(count: number): void;
+  advect_particles(dt: number): void;
+  speeds_ptr(): number;
+  active_particle_count(): number;
+};
+
+export interface SmokeProbeResult {
+  active: number;
+  meanSpeed: number;
+}
+
+/**
+ * TEMPORARY smoke probe (F011; deleted in F019 like F003's probe).
+ *
+ * Resets the flow, spawns 2 000 inlet particles, advances 60 lattice steps
+ * (one advect per step), and reports the surviving count plus the mean
+ * lattice speed over the active set. Deterministic: `spawn_particles`
+ * reseeds, so two consecutive clicks agree exactly.
+ */
+export async function runSmokeProbe(): Promise<SmokeProbeResult> {
+  const api = (await ensureEngine()) as ParticleWasmApi;
+  api.reset_flow();
+  api.spawn_particles(2000);
+  for (let i = 0; i < 60; i += 1) {
+    api.step(1);
+    api.advect_particles(1.0);
+  }
+  const active = api.active_particle_count();
+  let meanSpeed = 0;
+  if (active > 0) {
+    const ptr = api.speeds_ptr();
+    // Synchronous read — no allocation-triggering call happens while the
+    // view is alive, per ARCHITECTURE.md §5 buffer-view rules.
+    const speeds = new Float32Array(api.memory.buffer, ptr, active);
+    let sum = 0;
+    for (let i = 0; i < active; i += 1) {
+      sum += speeds[i] ?? 0;
+    }
+    meanSpeed = sum / active;
+  }
+  return { active, meanSpeed };
+}

@@ -214,6 +214,10 @@ sample_velocity_batch(points: &[f32], out: &mut [f32])
 /// (Re)seed particles at the inlet plane. Clears the pool.
 spawn_particles(count: u32)
 
+/// Append up to n inlet particles without clearing; returns how many were
+/// added (F011 addition — F014 calls it each frame to recycle).
+respawn(n: u32) -> u32
+
 /// Integrate particles one dt. Kills those exiting the domain or entering solid.
 advect_particles(dt_lattice: f32)
 

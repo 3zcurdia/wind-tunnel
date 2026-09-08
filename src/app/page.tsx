@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { UploadPanel } from "@/components/controls/UploadPanel";
+import { SmokeProbe } from "@/components/controls/SmokeProbe";
 import { VoxelDebugToggle } from "@/components/controls/VoxelDebugToggle";
 import { Panel } from "@/components/ui/Panel";
 import { WasmProbe } from "@/components/ui/WasmProbe";
@@ -94,6 +95,7 @@ export default function Home() {
               <UploadPanel />
               <WasmProbe />
               <VoxelDebugToggle />
+              <SmokeProbe />
             </div>
           </Panel>
           <div className="min-h-[70vh] flex-1 overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900">
