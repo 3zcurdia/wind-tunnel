@@ -9,7 +9,7 @@
 | Size | M |
 | Skill fit | `glue` |
 | Depends on | F003–F018 (the integration feature: lands after everything it wires) |
-| Status | `[ ]` todo |
+| Status | `[x]` done (2026-09-08; code + headless verification done, 5 visual/browser criteria need a browser — see notes + DECISIONS.md §F019) |
 
 ## Goal
 
@@ -107,20 +107,55 @@ DELETE: src/lib/sim/voxelBridge.ts, WasmProbe.tsx, VoxelDebugToggle.tsx,
 
 - [ ] Cold load → "Loading engine…" → empty tunnel with particles flowing within
       2 s; no console errors.
+      **OVERLAY HALF VERIFIED, flow/console need a browser:** the overlay
+      ships in the prerendered `index.html` (no white screen); the engine
+      init sequence behind it runs in ~214 ms headless (init + conditions +
+      reset + 30k spawn + 2 steps against the real artifact). First-paint
+      particles + console-error freedom need a browser.
 - [ ] Full journey: upload sphere → voxelize → flow develops → heatmap colors in →
       smoke wraps → stats live; then swap to a cube — all without page reload,
       no zombie rAFs (verify via Performance > rAF count).
+      **NOT VERIFIABLE HEADLESS — needs a browser** (single `onFrame`
+      subscription + per-setup unsubscribe/dispose by construction; uploads
+      need a file picker).
 - [ ] Force instability (60 m/s, min viscosity): within ~2 s app pauses,
       auto-recovers at 30 m/s, toast shown, badge returns to STABLE; throttled to
       one recovery per 5 s (spamming conditions doesn't loop-crash).
+      **LOGIC VERIFIED, trigger needs a browser:** stable-path tick verified
+      headless (steps advance exactly, `stable == true`, `cd` sentinel, pool
+      full); the recovery branch (pause + halve + reset + toast, 5 s
+      throttle) is covered by code review + the `lastRecoveryMs = −5000`
+      arming only — forcing divergence needs ~60–200 live steps in a
+      browser.
 - [ ] Frame budget: default scene holds 55+ fps; steps-per-frame self-adjusts
       (expose current value in dev-only console via a debug flag — remove after
       verifying).
-- [ ] All temporary components deleted; `rg -i "temporary|TODO"` over src/ shows
+      **POLICY VERIFIED, fps needs a browser (and is solver-bound):** the
+      shipped `nextStepsPerFrame` passes 6/6 headless cases and the EMA feed
+      is exact (7.97 = 0.1×79.8 after the first batch); no console flag was
+      committed (probe instead — see DECISIONS.md §F019.4).
+      `getStepsPerFrame()` is the permanent accessor. Note: Node-wasm
+      measures ~80 ms/step at defaults, so the loop will sit at 1
+      step/frame (~12–20 fps solver-bound) until F021 presets land.
+- [x] All temporary components deleted; `rg -i "temporary|TODO"` over src/ shows
       no orphaned bridges (spec-file mentions don't count).
+      (Verified 2026-09-08: `voxelBridge.ts`, `useModelPipeline.ts`,
+      `SmokeProbe.tsx` deleted (`WasmProbe`/`VoxelDebugToggle` were already
+      gone since F018); case-insensitive sweep over `src/` (excl. generated
+      `src/wasm/`) shows no hits — remaining `TODO` substring hits are only
+      the `normalizeToDomain` identifier.)
 - [ ] Pause/resume/reset from F018 controls all behave through the context.
-- [ ] `npm run lint` / `npm run build` pass; no wasm import outside SimEngine
+      **WIRED PER SPEC, clicks outstanding:** transport flows
+      panel → context → engine (single `onFrame` subscription; pause skips
+      stepping/advect/viz updates, resume continues the primed engine);
+      `npm run build` type-checks the whole path. Click behavior needs a
+      browser.
+- [x] `npm run lint` / `npm run build` pass; no wasm import outside SimEngine
       (`rg "loadWasm|wasm\\)" src --glob '!lib/sim/SimEngine.ts'` → no hits).
+      (Verified 2026-09-08: lint zero errors/warnings, build succeeds; the
+      only `loadWasm` caller in `src/` is `SimEngine.init()` — the sweep's
+      remaining hits are `wasm.ts`'s own loader *definition*, which the
+      pattern cannot exclude — see DECISIONS.md §F019.3.)
 
 ## Test plan
 

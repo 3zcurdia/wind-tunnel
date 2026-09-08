@@ -7,10 +7,10 @@ import { pressureColorInto } from "./colormaps";
  * displayed model as vertex colors (blue = low, near-white = ambient,
  * red = high) via `pressureColor`.
  *
- * Pure-ish module — no React, no wasm imports. The driver (TEMPORARY
- * `voxelBridge` heatmap section now, `SimEngine` via F019 later) passes the
- * zero-copy wasm pressure view each frame; this class never touches wasm
- * memory ownership and holds no scene nodes, only attribute writes.
+ * Pure-ish module — no React, no wasm imports. The driver (the F019 frame
+ * loop via `SimEngine`) passes the zero-copy wasm pressure view each frame;
+ * this class never touches wasm memory ownership and holds no scene nodes,
+ * only attribute writes.
  *
  * Kept free of non-erasable TS syntax (like `colormaps.ts`) so the
  * `node --test` harness can import it directly (see
@@ -153,9 +153,9 @@ export function buildStoredIndexMap(lattice: Float32Array): Int32Array {
  * Writes wasm vertex-pressure colors onto a model's `color` attribute.
  *
  * Driver-agnostic: the caller passes the pressure view + anchors each frame
- * (TEMPORARY `voxelBridge` driver now, `SimEngine` via F019 later — the
- * `update` signature is the exact shape F019 will call). The class holds no
- * scene nodes and never imports wasm modules.
+ * (the F019 frame loop via `SimEngine` — the `update` signature is the exact
+ * shape it calls). The class holds no scene nodes and never imports wasm
+ * modules.
  */
 export class HeatmapOverlay {
   private geometry: BufferGeometry | null = null;

@@ -17,9 +17,8 @@ export const DOMAIN = { nx: 128, ny: 48, nz: 48 } as const;
 /**
  * Live simulation readout for the stats bar (F017).
  *
- * Durable contract: F019's `SimEngine.getReadout()` / `SimulationContext`
- * assembles this same shape (the temporary `voxelBridge.getReadout()` is
- * deleted then, the component consuming it is unchanged).
+ * Durable contract: `SimEngine.getReadout()` / `SimulationContext`
+ * assembles this same shape every 4 Hz for the stats bar.
  */
 export interface SimReadout {
   /** Display refresh rate from JS-side rAF deltas (EMA), frames/s. */

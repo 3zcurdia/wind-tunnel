@@ -14,8 +14,8 @@ import { DOMAIN } from "../sim/types";
  * line trails (`THREE.LineSegments`, color-darkening fade on the dark
  * background — `LineBasicMaterial` has no per-vertex alpha).
  *
- * Driver-agnostic by design: the caller (TEMPORARY `voxelBridge` smoke driver
- * now, `SimEngine` via F019 later) injects a batched sampling closure over
+ * Driver-agnostic by design: the caller (the F019 frame loop via
+ * `SimEngine`) injects a batched sampling closure over
  * `sample_velocity_batch` — this class never imports wasm modules and stays
  * unit-testable with a fake flow field.
  *

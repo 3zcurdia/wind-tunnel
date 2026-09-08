@@ -1,8 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useModel } from "@/lib/sim/ModelContext";
-import { getReadout } from "@/lib/sim/voxelBridge";
+import { useSimulationContext } from "@/lib/sim/SimulationContext";
 import {
   DOMAIN,
   READOUT_PLACEHOLDER,
@@ -12,7 +10,6 @@ import {
   formatKPa,
   formatRe,
   formatTriangles,
-  type SimReadout,
 } from "@/lib/sim/types";
 
 function withUnit(text: string, unit: string): string {
@@ -46,37 +43,19 @@ function StatCell({
 /**
  * Live stats bar (F017): FPS, steps/s, drag coefficient + force, pressure
  * extremes, Reynolds number, grid size, particle count, and a stability
- * badge — polled from the temporary `voxelBridge.getReadout()` at 4 Hz.
- * F019 swaps the data source to `SimulationContext` (same `SimReadout`
- * shape); this component stays unchanged.
+ * badge — fed by `SimulationContext` (4 Hz readout assembled by
+ * `SimEngine.getReadout()`, model identity filled by the provider).
+ * Signature unchanged.
  *
  * SSR-safe: renders placeholders until the first client-side poll resolves.
  */
 export function StatsPanel() {
-  const { file, meta } = useModel();
-  const [sim, setSim] = useState<SimReadout | null>(null);
-
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      setSim(getReadout());
-    }, 250);
-    return () => {
-      window.clearInterval(id);
-    };
-  }, []);
-
-  // Model identity comes from ModelContext (the bridge is React-free and
-  // reports both as null). A file counts as "loaded" only once the parse
-  // pipeline recorded its counts — a failed parse keeps stale sim numbers
-  // out of the bar.
-  const modelName = file !== null && meta !== undefined ? file.name : null;
-  const modelTriangles =
-    file !== null && meta !== undefined ? (meta.triangles ?? null) : null;
-  const readout: SimReadout | null =
-    sim !== null ? { ...sim, modelName, modelTriangles } : null;
+  const { readout } = useSimulationContext();
 
   // Empty state (spec §4): no model or no run yet → every metric "—" except
   // the grid dims (from DOMAIN) and a gray STABLE badge.
+  const modelName = readout?.modelName ?? null;
+  const modelTriangles = readout?.modelTriangles ?? null;
   const empty = readout === null || modelName === null;
   const gridDims = readout?.gridDims ?? [DOMAIN.nx, DOMAIN.ny, DOMAIN.nz];
   const stable = readout?.stable ?? true;

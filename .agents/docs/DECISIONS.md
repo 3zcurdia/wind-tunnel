@@ -6,6 +6,98 @@ stay consistent with `ARCHITECTURE.md`.
 
 ---
 
+## 2026-09-08 — F019 (simulation loop orchestration)
+
+Headless probes below drive the real `--target web` artifact via `initSync`
+(F014/F017 pattern), 128×48×48 + empty domain (no mesh), Node 26.8.1, Apple
+M4 Pro. `node --test /tmp/f019-probe.mjs` 7/7 pass (6 adaptive-policy cases
+against the shipped `nextStepsPerFrame` imported from the real
+`SimEngine.ts` via an `@/`-alias resolve hook, plus 1 ABI-sequence mirror);
+`npm run lint` zero errors/warnings; `npm run build` succeeds (the
+"Loading engine…" overlay is present in the prerendered `index.html`).
+
+1. **`SimulationContext.tsx` is new, not modified (F018.1 precedent).** The
+   Files list says "(modify) — full API (F004 skeleton extended)", but no
+   such file ever landed (F018 built a controlled-props adapter in `page.tsx`
+   instead — see §F018.1). Created at the spec'd path with exactly the §3
+   API plus two additive members the wiring provably needs:
+   `conditionsUnstable` (F018's panel contract — the §3 list abbreviates with
+   `smoke*`/`heatmapToggle` but the panel cannot render its clamp warning
+   without it) and `pushToast` (the §5 error surface needs a push path
+   reachable from the loop/pipeline in `useSimulation`). No contract removed.
+2. **Consumer rewire touches four files outside the Files list (smallest
+   change satisfying §3 + criterion 5).** `ParticleCountSlider`,
+   `SmokeControls`, `StatsPanel`, and `ControlPanel`'s `LayersSection` all
+   imported the deleted `voxelBridge`; leaving them would break the build,
+   and §3 explicitly requires every temporary control's data path to run
+   through the single context. All four keep their exact props/component
+   signatures (sliders/controls/legend/panel render identically — only the
+   data source changes: context state instead of bridge module state; the
+   legend now reads its anchors from the 4 Hz readout, same cadence as the
+   deleted 4 Hz anchor subscription). Comment-only touch-ups in the same
+   spirit (no code changes): viz-class headers (`ParticleSystem`,
+   `HeatmapOverlay`, `SmokeTracers`), `types.ts`, `PressureLegend` — all said
+   "temporary bridge driver", which criterion 5's `rg -i temporary|TODO`
+   sweep would otherwise flag. `WasmProbe.tsx`/`VoxelDebugToggle.tsx` were
+   already deleted in F018, so the DELETE list shrinks to `voxelBridge.ts`,
+   `useModelPipeline.ts`, `SmokeProbe.tsx` (all removed).
+3. **`wasm.ts` untouched (structural extension lives in `SimEngine`).**
+   `SimEngine` defines its full ABI surface as a local structural type over
+   the loader's narrow `WasmApi` (the deleted bridge's own pattern), so only
+   `SimEngine.ts` imports `loadWasm`. Criterion 7's literal
+   `rg "loadWasm|wasm\\)"` would still hit `wasm.ts`'s own *definition* site
+   (`export function loadWasm`, the `import("@/wasm/windtunnel")` it must
+   contain) — the intent (no ABI callers outside `SimEngine`) holds: the
+   only `loadWasm` *caller* in `src/` is `SimEngine.init()`.
+4. **No dev-only steps console flag committed (criterion 4 alternative).**
+   The spec suggests exposing steps-per-frame via a debug flag and removing
+   it after verifying; instead the policy was verified headless (6/6 cases
+   against the shipped pure helper — cold start 2→4→8, hold band [3, 7.2]
+   ms at budget 12, halve-to-floor with min 1, non-finite → cold start) and
+   the EMA math confirmed through the real artifact (first `step(2)` batch:
+   wall 159.7 ms → `avg_step_ms` 7.97 = 0.1×79.8, exact α=0.1 update), so no
+   console scaffolding ever entered the tree. `SimEngine.getStepsPerFrame()`
+   remains as the permanent diagnostic accessor.
+5. **Recovery throttle gates halving, not pause+reset.** `tick()` on
+   `!is_stable()`: always pause + `reset_flow()` (the latch clears, so the
+   badge can return to STABLE), but the wind-halving (50 %, clamped to
+   1–60 m/s) and the `recovered` toast flag run at most once per 5 s —
+   otherwise spamming Run into a divergent point would halve to the floor
+   without a visible pause. `lastRecoveryMs` starts at −5000 so the first
+   recovery always runs fully.
+6. **Pipeline voxelizes before displaying.** Spec order reads
+   "parse → normalize → `engine.setMesh` → `resetFlow` → `play()`" with
+   display implied; `showModel` runs after a successful `setMesh` so a
+   voxelization failure keeps the previous model on screen (the old pipeline
+   never swapped the scene on failure). `file === null` clears both the
+   scene model and the engine mesh (no ghost obstacle) plus a flow reset.
+7. **Voxel debug cloud goes dormant until F020.** The deleted
+   `VoxelPipelineHost` was its only feeder; `updateVoxelDebug` /
+   `setVoxelDebugVisible` / `clearVoxelDebug` stay on `SceneManager` (F020's
+   layer toggle re-feeds them), but nothing calls `updateVoxelDebug` in v1 —
+   the `debug` layer is simply empty.
+8. **Pause freezes smoke in place (no reseed-on-resume).** The deleted
+   drivers restarted on resume (smoke trails reseeded, heatmap re-attached);
+   the unified loop skips all sim/viz updates while paused, so resume
+   continues the exact frozen state. Smoke re-enable still re-seeds (fresh
+   emission preserved).
+9. **`resetAll` leaves run/pause untouched** (matches the F018 adapter:
+   conditions → defaults + commit + flow reset; mesh, particle target, and
+   running state kept). A debounced drag value pending at recovery/reset
+   time is dropped (it would clobber the halved/default point); the user
+   re-drags afterwards.
+
+Observed values: `step(2)` wall 159.7 ms (≈ 79.8 ms/step in Node-wasm on
+this machine — slower than F010's 47.7 ms release datapoint; the adaptive
+loop will therefore sit at 1 step/frame at defaults until F021 presets);
+`timing().avg_step_ms` 7.97 after the first batch (EMA warming exact);
+`set_conditions(15, 101.325, …)` → `u_lattice` 0.073729; spawn 30000 →
+active 30000, all positions/speeds finite; `stats().steps` 2n, `cd` −1
+sentinel (no mesh), anchors zeroed without mesh. `cargo test` not run (no
+Rust files touched — waived per CONVENTIONS.md).
+
+---
+
 ## 2026-09-08 — F018 (control panel)
 
 Headless probes below drive the real `--target web` artifact via `initSync`

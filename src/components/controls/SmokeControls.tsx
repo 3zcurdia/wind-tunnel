@@ -1,6 +1,5 @@
 "use client";
 
-import { useState } from "react";
 import {
   SMOKE_HALF_WIDTH_MAX,
   SMOKE_HALF_WIDTH_MIN,
@@ -9,33 +8,33 @@ import {
   SMOKE_HISTORY_MIN,
   SMOKE_RAKE_Y_MAX,
   SMOKE_RAKE_Y_MIN,
-  getSmokeEnabled,
-  getSmokeHistoryLen,
-  getSmokeRake,
-  setSmokeEnabled,
-  setSmokeHistoryLen,
-  setSmokeRake,
-} from "@/lib/sim/voxelBridge";
+} from "@/lib/sim/SimEngine";
+import { useSimulationContext } from "@/lib/sim/SimulationContext";
 
 /**
- * TEMPORARY smoke-tracer controls (F016 §2; relocated by F018/F020).
+ * Smoke-tracer controls (F016 §2; owned by `SimulationContext` since F019).
  * Toggle + rake-height / rake-width sliders + trail-length input, all routed
- * live through the voxelBridge smoke backend (re-seed / rebuild). Deleted in
- * F019.
+ * live through the context (the loop applies rake/history to the live rake;
+ * the toggle gates the frame update). Signature unchanged.
  */
 export function SmokeControls() {
-  const [enabled, setEnabled] = useState(getSmokeEnabled);
-  const [rake, setRake] = useState(getSmokeRake);
-  const [historyLen, setHistoryLen] = useState(getSmokeHistoryLen);
+  const {
+    smokeEnabled,
+    setSmokeEnabled,
+    smokeRake,
+    setSmokeRake,
+    smokeHistoryLen,
+    setSmokeHistoryLen,
+  } = useSimulationContext();
 
   function handleRakeHeight(event: React.ChangeEvent<HTMLInputElement>): void {
     const y = Number(event.target.value);
-    setRake(setSmokeRake(y, rake.zCenter, rake.halfWidth));
+    setSmokeRake(y, smokeRake.zCenter, smokeRake.halfWidth);
   }
 
   function handleRakeWidth(event: React.ChangeEvent<HTMLInputElement>): void {
     const halfWidth = Number(event.target.value);
-    setRake(setSmokeRake(rake.yCenter, rake.zCenter, halfWidth));
+    setSmokeRake(smokeRake.yCenter, smokeRake.zCenter, halfWidth);
   }
 
   function handleHistoryLen(
@@ -43,10 +42,10 @@ export function SmokeControls() {
   ): void {
     const n = Number(event.target.value);
     if (!Number.isFinite(n)) {
-      setHistoryLen(SMOKE_HISTORY_DEFAULT);
+      setSmokeHistoryLen(SMOKE_HISTORY_DEFAULT);
       return;
     }
-    setHistoryLen(setSmokeHistoryLen(n));
+    setSmokeHistoryLen(n);
   }
 
   return (
@@ -58,11 +57,9 @@ export function SmokeControls() {
         <input
           id="smoke-toggle"
           type="checkbox"
-          checked={enabled}
+          checked={smokeEnabled}
           onChange={(event) => {
-            const on = event.target.checked;
-            setEnabled(on);
-            setSmokeEnabled(on);
+            setSmokeEnabled(event.target.checked);
           }}
           className="accent-blue-500"
         />
@@ -76,7 +73,7 @@ export function SmokeControls() {
           Rake height
         </label>
         <span className="text-xs text-neutral-500">
-          y&nbsp;=&nbsp;{rake.yCenter.toFixed(0)}
+          y&nbsp;=&nbsp;{smokeRake.yCenter.toFixed(0)}
         </span>
       </div>
       <input
@@ -85,7 +82,7 @@ export function SmokeControls() {
         min={SMOKE_RAKE_Y_MIN}
         max={SMOKE_RAKE_Y_MAX}
         step={1}
-        value={Math.round(rake.yCenter)}
+        value={Math.round(smokeRake.yCenter)}
         onChange={handleRakeHeight}
         className="w-full accent-blue-500"
       />
@@ -97,7 +94,7 @@ export function SmokeControls() {
           Rake width
         </label>
         <span className="text-xs text-neutral-500">
-          ±&nbsp;{rake.halfWidth.toFixed(0)}
+          ±&nbsp;{smokeRake.halfWidth.toFixed(0)}
         </span>
       </div>
       <input
@@ -106,7 +103,7 @@ export function SmokeControls() {
         min={SMOKE_HALF_WIDTH_MIN}
         max={SMOKE_HALF_WIDTH_MAX}
         step={1}
-        value={Math.round(rake.halfWidth)}
+        value={Math.round(smokeRake.halfWidth)}
         onChange={handleRakeWidth}
         className="w-full accent-blue-500"
       />
@@ -123,7 +120,7 @@ export function SmokeControls() {
           min={SMOKE_HISTORY_MIN}
           max={SMOKE_HISTORY_MAX}
           step={1}
-          value={historyLen}
+          value={smokeHistoryLen}
           onChange={handleHistoryLen}
           className="w-20 rounded border border-neutral-700 bg-neutral-900 px-1 py-0.5 text-right text-xs text-neutral-300"
         />

@@ -15,8 +15,8 @@ function formatKPa(pa: number): string {
 /**
  * Surface-pressure legend (F015 §2): vertical gradient bar (blue = low at
  * the bottom, red = high at the top) with p_max / ambient / p_min labels and
- * a q_ref caption. Pure props-driven — no wasm imports (F019's stats feed
- * replaces the temporary bridge driver without touching this component).
+ * a q_ref caption. Pure props-driven — no wasm imports (fed by the
+ * `SimulationContext` readout without touching this component).
  */
 export function PressureLegend({
   pMinPa,

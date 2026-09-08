@@ -2,34 +2,29 @@
 
 import { useState } from "react";
 import {
-  PARTICLE_COUNT_DEFAULT,
   PARTICLE_COUNT_MAX,
   PARTICLE_COUNT_MIN,
   PARTICLE_COUNT_STEP,
-  setParticleCount,
-} from "@/lib/sim/voxelBridge";
+} from "@/lib/sim/SimEngine";
+import { useSimulationContext } from "@/lib/sim/SimulationContext";
 
 /**
- * TEMPORARY particle-count slider (F014 §3; relocated by F018/F019).
- * 5k–100k in 5k steps → `voxelBridge.setParticleCount` (wasm
- * `spawn_particles` + driver top-up target). Deleted in F019.
+ * Particle-count slider (F014 §3; owned by `SimulationContext` since F019).
+ * 5k–100k in 5k steps → context `setParticleCount` (engine
+ * `spawn_particles` + loop top-up target). Signature unchanged.
  */
 export function ParticleCountSlider() {
-  const [value, setValue] = useState(PARTICLE_COUNT_DEFAULT);
+  const { particleCount, setParticleCount } = useSimulationContext();
   const [failed, setFailed] = useState(false);
 
   function handleChange(event: React.ChangeEvent<HTMLInputElement>): void {
     const next = Number(event.target.value);
-    setValue(next);
     setFailed(false);
-    void setParticleCount(next).then(
-      (actual) => {
-        setValue(actual);
-      },
-      () => {
-        setFailed(true);
-      },
-    );
+    try {
+      setParticleCount(next);
+    } catch {
+      setFailed(true);
+    }
   }
 
   return (
@@ -42,7 +37,7 @@ export function ParticleCountSlider() {
           Particles
         </label>
         <span className="text-xs text-neutral-500">
-          {(value / 1000).toFixed(0)}k
+          {(particleCount / 1000).toFixed(0)}k
         </span>
       </div>
       <input
@@ -51,7 +46,7 @@ export function ParticleCountSlider() {
         min={PARTICLE_COUNT_MIN}
         max={PARTICLE_COUNT_MAX}
         step={PARTICLE_COUNT_STEP}
-        value={value}
+        value={particleCount}
         onChange={handleChange}
         className="w-full accent-blue-500"
       />

@@ -1,17 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { Panel } from "@/components/ui/Panel";
 import { Slider } from "@/components/ui/Slider";
 import { ParticleCountSlider } from "@/components/controls/ParticleCountSlider";
 import { PressureLegend } from "@/components/controls/PressureLegend";
 import { SmokeControls } from "@/components/controls/SmokeControls";
-import {
-  getHeatmapAnchors,
-  getHeatmapEnabled,
-  setHeatmapEnabled,
-  subscribeHeatmapAnchors,
-} from "@/lib/sim/voxelBridge";
+import { useSimulationContext } from "@/lib/sim/SimulationContext";
 import {
   AIR_PRESSURE_RANGE,
   DEFAULT_CHAR_LEN_M,
@@ -25,9 +20,8 @@ import {
 import { formatRe } from "@/lib/sim/types";
 
 /**
- * Transport controls (F018 contract shape — F019's `SimulationContext`
- * provides this same object; until then `page.tsx` wires a temporary adapter
- * with identical semantics over `voxelBridge`).
+ * Transport controls (F018 contract shape — `SimulationContext.transport`
+ * provides this object; `page.tsx` wires it through).
  */
 export interface TransportApi {
   readonly running: boolean;
@@ -85,15 +79,14 @@ function formatNu(nuM2S: number): string {
 }
 
 /**
- * Heatmap visibility + legend (relocated from `page.tsx`'s F015
- * `HeatmapPanel` — same bridge wiring, now under the F018 "Layers" section;
- * full layer toggles remain F020's job).
+ * Heatmap visibility + legend (F015's toggle + legend, fed by
+ * `SimulationContext` since F019: the 4 Hz readout carries the same anchors
+ * the deleted bridge pushed — full layer toggles remain F020's job).
  */
 function LayersSection() {
-  const [enabled, setEnabled] = useState(getHeatmapEnabled);
-  const [anchors, setAnchors] = useState(getHeatmapAnchors);
-
-  useEffect(() => subscribeHeatmapAnchors(setAnchors), []);
+  const { heatmapEnabled, setHeatmapEnabled, readout } =
+    useSimulationContext();
+  const anchors = readout ?? { pMinPa: 0, pMaxPa: 0, qRefPa: 0 };
 
   return (
     <section>
@@ -105,11 +98,9 @@ function LayersSection() {
         <input
           id="heatmap-toggle"
           type="checkbox"
-          checked={enabled}
+          checked={heatmapEnabled}
           onChange={(event) => {
-            const on = event.target.checked;
-            setEnabled(on);
-            setHeatmapEnabled(on);
+            setHeatmapEnabled(event.target.checked);
           }}
           className="accent-blue-500"
         />

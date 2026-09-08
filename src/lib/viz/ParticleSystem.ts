@@ -23,9 +23,9 @@ export type ParticleColorMode = "speed" | "pressure";
  * The signature visual (F014): thousands of solver-advected particles as a
  * single `THREE.Points` draw call, colored by speed (slow = blue, fast = red).
  *
- * Driver-agnostic by design: the caller (TEMPORARY `voxelBridge` driver now,
- * `SimEngine` via F019 later) passes zero-copy wasm-memory views each frame —
- * this class never imports wasm modules and never copies on the caller side.
+ * Driver-agnostic by design: the caller (`SimEngine` via the F019 frame
+ * loop) passes zero-copy wasm-memory views each frame — this class never
+ * imports wasm modules and never copies on the caller side.
  * Rust owns the pool (F011); this class only mirrors the active prefix into
  * GPU attributes.
  */
