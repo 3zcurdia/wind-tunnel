@@ -11,13 +11,16 @@ export RUSTUP_HOME="${PWD}/node_modules/.cache/rustup-home"
 export CARGO_TARGET_DIR="${PWD}/node_modules/.cache/cargo-target"
 export PATH="${CARGO_HOME}/bin:${HOME}/.cargo/bin:${PATH}"
 
-if ! command -v cargo >/dev/null 2>&1; then
-  echo "Installing Rust toolchain..."
+# The Vercel build image may ship rustup/cargo proxy binaries, so a bare
+# `command -v cargo` check is unreliable — install the toolchain explicitly
+# into our RUSTUP_HOME and set it as default (no-op when already cached).
+if ! command -v rustup >/dev/null 2>&1; then
+  echo "Installing rustup..."
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-    | sh -s -- -y --profile minimal --default-toolchain stable \
-        --target wasm32-unknown-unknown --no-modify-path
+    | sh -s -- -y --profile minimal --default-toolchain none --no-modify-path
 fi
-rustup target add wasm32-unknown-unknown
+rustup toolchain install stable --profile minimal --target wasm32-unknown-unknown
+rustup default stable
 
 if ! command -v wasm-pack >/dev/null 2>&1; then
   echo "Installing wasm-pack..."
