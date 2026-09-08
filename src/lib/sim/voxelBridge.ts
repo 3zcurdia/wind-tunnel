@@ -1,4 +1,5 @@
 import type { BufferGeometry } from "three";
+import { HeatmapOverlay } from "@/lib/viz/HeatmapOverlay";
 import { ParticleSystem } from "@/lib/viz/ParticleSystem";
 import type { SceneManager } from "@/components/viewport/SceneManager";
 import { DOMAIN } from "@/lib/sim/types";
@@ -124,6 +125,9 @@ type LatticeParamsLike = {
 /**
  * Structural view of the F012 pressure ABI (same TEMPORARY-bridge pattern as
  * above — folded into `SimEngine` in F019).
+ *
+ * `pressure_anchors()` returns a wasm-bindgen class instance (heap-allocated
+ * per call — see DECISIONS.md F015.3), so every read must end in `.free()`.
  */
 type PressureWasmApi = ParticleWasmApi & {
   set_conditions(
@@ -133,10 +137,13 @@ type PressureWasmApi = ParticleWasmApi & {
     domainLengthM: number,
     charLengthM: number,
   ): LatticeParamsLike;
+  vertex_pressure_ptr(): number;
+  vertex_pressure_len(): number;
   pressure_anchors(): {
     p_min_pa: number;
     p_max_pa: number;
     q_ref_pa: number;
+    free(): void;
   };
 };
 
@@ -185,14 +192,20 @@ export async function runSmokeProbe(): Promise<SmokeProbeResult> {
     meanSpeed = sum / active;
   }
   // Synchronous anchor read (plain struct, copied — no view lifetime issue).
+  // The anchors object is wasm-heap-allocated per call, so it is freed
+  // before returning (F015.3; previously leaked one per probe click).
   const anchors = api.pressure_anchors();
-  return {
-    active,
-    meanSpeed,
-    pMinPa: anchors.p_min_pa,
-    pMaxPa: anchors.p_max_pa,
-    qRefPa: anchors.q_ref_pa,
-  };
+  try {
+    return {
+      active,
+      meanSpeed,
+      pMinPa: anchors.p_min_pa,
+      pMaxPa: anchors.p_max_pa,
+      qRefPa: anchors.q_ref_pa,
+    };
+  } finally {
+    anchors.free();
+  }
 }
 
 // ── TEMPORARY particle-streamlines driver (F014; deleted in F019) ──────────
@@ -315,5 +328,161 @@ export function startParticleDriver(manager: SceneManager): () => void {
     stopped = true;
     unsubscribe();
     system.dispose();
+  };
+}
+
+// ── TEMPORARY surface-pressure heatmap driver (F015; deleted in F019) ──────
+// Until `SimEngine` exists, this section owns the live heatmap loop: one
+// `HeatmapOverlay` on the SceneManager model mesh, refreshed from
+// `SceneManager.onFrame`. Read-only — it never calls `step` (the particle
+// driver owns stepping) and never imports wasm modules directly (views only).
+// `HeatmapOverlay` itself stays driver-agnostic (F019 calls the same
+// `update` signature).
+
+/** Legend/overlay anchor snapshot in the exact shape F019 will pass around. */
+export interface HeatmapAnchorState {
+  pMinPa: number;
+  pMaxPa: number;
+  qRefPa: number;
+}
+
+/** Shared empty pressure view (no mesh yet) — never written to. */
+const EMPTY_PRESSURE = new Float32Array(0);
+
+/** Legend notify cadence: 4 Hz (spec §2/§4 — React re-renders stay cheap). */
+const LEGEND_NOTIFY_MS = 250;
+
+let heatmapEnabled = true;
+let heatmapManager: SceneManager | null = null;
+let heatmapOverlay: HeatmapOverlay | null = null;
+let cachedAnchors: HeatmapAnchorState = { pMinPa: 0, pMaxPa: 0, qRefPa: 0 };
+const heatmapListeners = new Set<(anchors: HeatmapAnchorState) => void>();
+let lastLegendNotifyMs = 0;
+
+export function getHeatmapEnabled(): boolean {
+  return heatmapEnabled;
+}
+
+export function getHeatmapAnchors(): HeatmapAnchorState {
+  return { ...cachedAnchors };
+}
+
+/**
+ * Subscribe to anchor snapshots for the legend (notified at 4 Hz from the
+ * frame driver, plus once immediately with the cached value so the legend
+ * never renders stale). Returns an unsubscribe function.
+ */
+export function subscribeHeatmapAnchors(
+  listener: (anchors: HeatmapAnchorState) => void,
+): () => void {
+  heatmapListeners.add(listener);
+  listener({ ...cachedAnchors });
+  return () => {
+    heatmapListeners.delete(listener);
+  };
+}
+
+/**
+ * TEMPORARY heatmap toggle backend (F015 §2; relocated by F018/F019).
+ * Enabling attaches the overlay to the current model geometry (if any) and
+ * switches the material to vertex colors; disabling clears the attribute
+ * and restores the plain gray material exactly. Safe before the driver
+ * starts (the flag persists; start re-attaches when a model is present).
+ */
+export function setHeatmapEnabled(on: boolean): void {
+  heatmapEnabled = on;
+  const manager = heatmapManager;
+  const overlay = heatmapOverlay;
+  if (!manager || !overlay) return;
+  if (!on) {
+    overlay.clear();
+    manager.setModelVertexColors(false);
+    return;
+  }
+  const geometry = manager.getModelGeometry();
+  if (geometry) {
+    overlay.attach(geometry);
+    manager.setModelVertexColors(true);
+  }
+}
+
+/**
+ * TEMPORARY frame driver (F015 §3). Each frame (read-only — no `step`):
+ * reconcile the overlay with the live model geometry (re-attach on swap,
+ * detach when the model is gone or the toggle is off), read the
+ * `vertex_pressure` view + `pressure_anchors()` (freed every frame — see
+ * DECISIONS.md F015.3), and call `HeatmapOverlay.update` (which throttles
+ * color fills to every 3rd frame itself). Legend subscribers are notified at
+ * 4 Hz.
+ *
+ * Returns a stop function that unsubscribes, detaches the overlay, and
+ * restores the base material. Safe under StrictMode remount.
+ */
+export function startHeatmapDriver(manager: SceneManager): () => void {
+  heatmapManager = manager;
+  const overlay = new HeatmapOverlay();
+  heatmapOverlay = overlay;
+  let stopped = false;
+  let api: PressureWasmApi | null = null;
+
+  const unsubscribe = manager.onFrame(() => {
+    if (stopped || api === null) return;
+    const geometry = heatmapEnabled ? manager.getModelGeometry() : null;
+    if (!geometry) {
+      if (overlay.attachedGeometry) {
+        overlay.clear();
+        manager.setModelVertexColors(false);
+      }
+      return;
+    }
+    if (overlay.attachedGeometry !== geometry) {
+      overlay.attach(geometry);
+      manager.setModelVertexColors(true);
+    }
+    const len = api.vertex_pressure_len();
+    const ptr = api.vertex_pressure_ptr();
+    // Synchronous read — no allocation-triggering call happens while the
+    // view is alive, per ARCHITECTURE.md §5 buffer-view rules.
+    const pressure =
+      ptr === 0 || len === 0
+        ? EMPTY_PRESSURE
+        : new Float32Array(api.memory.buffer, ptr, len);
+    const raw = api.pressure_anchors();
+    const anchors: HeatmapAnchorState = {
+      pMinPa: raw.p_min_pa,
+      pMaxPa: raw.p_max_pa,
+      qRefPa: raw.q_ref_pa,
+    };
+    raw.free();
+    overlay.update(pressure, anchors);
+    cachedAnchors = anchors;
+    const now = performance.now();
+    if (now - lastLegendNotifyMs >= LEGEND_NOTIFY_MS) {
+      lastLegendNotifyMs = now;
+      const snapshot = { ...anchors };
+      for (const listener of heatmapListeners) {
+        listener(snapshot);
+      }
+    }
+  });
+
+  void (async () => {
+    try {
+      const engine = (await ensureEngine()) as PressureWasmApi;
+      if (stopped) return;
+      api = engine;
+    } catch {
+      // Engine load failure surfaces via the existing probes/pipeline error
+      // states; the driver simply stays idle (F019 replaces all of this).
+    }
+  })();
+
+  return () => {
+    stopped = true;
+    unsubscribe();
+    overlay.clear();
+    manager.setModelVertexColors(false);
+    if (heatmapOverlay === overlay) heatmapOverlay = null;
+    if (heatmapManager === manager) heatmapManager = null;
   };
 }

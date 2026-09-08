@@ -222,6 +222,35 @@ export class SceneManager {
     }
   }
 
+  /**
+   * Live model geometry (the world-space clone owned by the scene), or null
+   * when no model is shown (F015: the heatmap driver needs it for
+   * `HeatmapOverlay.attach` — reaching through the `meshModel` layer
+   * children would break encapsulation).
+   */
+  getModelGeometry(): BufferGeometry | null {
+    return this.modelMesh?.geometry ?? null;
+  }
+
+  /**
+   * Toggle vertex-color rendering on the model material (F015): the heatmap
+   * writes a `color` attribute — enabling shows it, disabling restores the
+   * plain base color. No-op when no model is shown.
+   */
+  setModelVertexColors(on: boolean): void {
+    const mesh = this.modelMesh;
+    if (!mesh) return;
+    const materials = Array.isArray(mesh.material)
+      ? mesh.material
+      : [mesh.material];
+    for (const material of materials) {
+      if (material.vertexColors !== on) {
+        material.vertexColors = on;
+        material.needsUpdate = true;
+      }
+    }
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;

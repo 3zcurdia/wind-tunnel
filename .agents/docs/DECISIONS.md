@@ -6,6 +6,44 @@ stay consistent with `ARCHITECTURE.md`.
 
 ---
 
+## 2026-09-08 — F015 (surface pressure heatmap)
+
+1. **Vertex-pressure order is deduped+sorted, not display order — `attach()`
+   rebuilds the index map locally (no ABI change).** The spec's
+   `HeatmapOverlay.update(pressure, …)` reads as pressure[i] ↔ color-vertex i
+   1:1, but F012 fills the buffer in F006's deduplicated, sorted vertex order
+   (see §F012.1 above) while the displayed mesh keeps loader/soup order
+   (`showModel` clones order-preservingly). Naive index mapping would permute
+   a smooth field into speckle and fail the red-upstream-pole criterion. The
+   bridge cannot supply the map (it discards the soup after `set_mesh`, and
+   the two pipeline passes complete asynchronously), and ARCH §5 forbids new
+   exports without an ARCH update — so `attach(geometry)` replicates F006's
+   `quantize(1e-6) → sort → dedup` on lattice positions recovered from the
+   world mesh by inverting `showModel`'s transform (uniform scale + offset is
+   axis-monotonic, hence order-preserving). Rounding replication is exact
+   (`Math.sign(v)·Math.round(|v|)` matches Rust's half-away-from-zero
+   `f64::round`; f32→f64 is exact); the residual is f32 round-trip noise
+   (~1e-6 vs the 1e-6 quantum), which can only reorder vertices within ~2e-6
+   cells of each other — coincident pixels, visually harmless. Out-of-range
+   lookups (count drift) and non-finite pressures both map to t = 0.5
+   (mid-gray), satisfying the unmapped-vertex and model-swap criteria.
+2. **`SceneManager.getModelGeometry()` added (additive getter).** The driver
+   must reach the displayed geometry for `attach()`; poking at
+   `getLayer('meshModel').children` would break SceneManager's encapsulation.
+   `setModelVertexColors(on)` is exactly per spec (no-op without a model).
+3. **Per-frame `pressure_anchors()` must be `.free()`d.** The generated
+   `PressureAnchors` is a wasm-bindgen class (heap-allocated per call), not a
+   plain struct — the F012 probe leaks one per click (fixed with a
+   try/finally in the same edit; `voxelBridge.ts` is in this feature's file
+   list). The heatmap driver reads + frees every frame, so steady-state holds
+   no wasm objects.
+4. **Heatmap defaults ON; toggle + legend live in `page.tsx` (Controls rail).**
+   `PressureLegend` keeps exactly the spec'd props `{ pMinPa, pMaxPa, qRefPa }`
+   (no wasm imports); the checkbox is a sibling in `page.tsx` so the contract
+   stays verbatim. F019 relocates both per the spec's TEMPORARY notes.
+
+---
+
 ## 2026-09-08 — F014 (particle streamlines)
 
 All numbers below measured headless with Node v26.8.1 against the real

@@ -9,7 +9,7 @@
 | Size | S |
 | Skill fit | `UI/3D` |
 | Depends on | F005 (model in scene), F012 (vertex pressure + anchors), F014 (colormaps) |
-| Status | `[ ]` todo |
+| Status | `[x]` done (2026-09-08; code + headless verification done, 5 visual/browser criteria need a browser — see notes) |
 
 ## Goal
 
@@ -80,14 +80,40 @@ src/app/page.tsx                          (modify) — mount legend + toggle
 
 - [ ] Sphere at defaults: upstream pole visibly red, downstream wake visibly blue,
       lateral surfaces near-white — after ~2 000 steps the pattern is stable.
+      **HEADLESS PROXY ONLY (browser check outstanding):** cube 8³ at the
+      stable (0.08, 0.56) point, 1 536 steps, real artifact → reddest vertex
+      (13,16,16) on the upstream −X face, bluest (21,8,16) on the downstream
+      +X face, 0 non-finite color channels, `stable == true` throughout. The
+      soup→stored index map (DECISIONS.md F015.1) is what makes this land:
+      naive order would speckle. Sphere pixels + lateral-white need a browser.
 - [ ] Toggle off restores the plain gray material exactly (no color residue).
+      **MECHANISM IN PLACE, browser click outstanding:** `setHeatmapEnabled`
+      routes `overlay.clear()` (attribute removed — unit-covered) +
+      `setModelVertexColors(false)` (vertexColors off → base `#9ca3af`).
 - [ ] Legend numbers move during spin-up and freeze at plausible values (p_max
       within ±30 % of q_ref at defaults).
+      **HEADLESS PARTIAL:** anchors moved during spin-up (pMax 13.0 → 266.6 →
+      297.0 Pa over 64 → 1 536 steps) and q_ref = 135.46 Pa == hand-computed
+      ½ρU² ✓; but the ±30 % band is sphere-specific — coarse cube corners read
+      p_max/q_ref = 2.19× (staircase singularity, same family as F012's 1.6×
+      sphere overshoot). Defaults-run (+F012 probe pattern) goes `stable ==
+      false` by ~256 steps at τ = 0.505, so a defaults sphere needs a browser
+      + F019's restart mitigation.
 - [ ] No visible shimmer/color noise: throttled updates don't fight the material.
-- [ ] Model with unmapped vertices (leaky/surface-mode mesh) renders those
+      **LOGIC VERIFIED, browser check outstanding:** every-3rd-frame throttle
+      pinned by unit test (calls 2–3 skip, call 4 repaints); material flags
+      flip only on attach/detach/swap, never per frame.
+- [x] Model with unmapped vertices (leaky/surface-mode mesh) renders those
       vertices mid-gray (t = 0.5) — not black/garbage.
+      (Unit-verified: empty pressure view → all vertices exactly
+      `pressureColor(0.5)`; NaN pressure → 0.5; zero-data anchors → 0.5; color
+      attribute stays fully finite in all cases.)
 - [ ] Swapping models clears + re-attaches cleanly (no stale attribute on a new
       geometry with different vertex count — must not crash or miscolor).
+      **HEADLESS PROXY ONLY (browser check outstanding):** re-attach across
+      different-count `BoxGeometry`s unit-covered (old attribute removed, fresh
+      attribute at the new count, all colors finite); the live driver
+      reconciles via `attachedGeometry !== getModelGeometry()` every frame.
 
 ## Test plan
 
