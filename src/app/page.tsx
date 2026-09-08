@@ -6,6 +6,7 @@ import { ParticleCountSlider } from "@/components/controls/ParticleCountSlider";
 import { PressureLegend } from "@/components/controls/PressureLegend";
 import { SmokeControls } from "@/components/controls/SmokeControls";
 import { SmokeProbe } from "@/components/controls/SmokeProbe";
+import { StatsPanel } from "@/components/controls/StatsPanel";
 import { VoxelDebugToggle } from "@/components/controls/VoxelDebugToggle";
 import { Panel } from "@/components/ui/Panel";
 import { WasmProbe } from "@/components/ui/WasmProbe";
@@ -244,12 +245,8 @@ export default function Home() {
             <ViewportMount />
           </div>
         </main>
-        <footer className="h-28 shrink-0 border-t border-neutral-800 p-4">
-          <Panel title="Stats" className="h-full">
-            <p className="text-xs text-neutral-500">
-              Live stats wire in F017.
-            </p>
-          </Panel>
+        <footer className="h-16 shrink-0 border-t border-neutral-800 px-4 py-2">
+          <StatsPanel />
         </footer>
       </div>
     </ModelProvider>

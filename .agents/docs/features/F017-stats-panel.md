@@ -9,7 +9,7 @@
 | Size | S |
 | Skill fit | `UI` |
 | Depends on | F010 (`timing`, `is_stable`), F013 (`StatsRecord`), F009 (LatticeParams) |
-| Status | `[ ]` todo |
+| Status | `[x]` done (2026-09-08; code + headless verification done, 5 browser criteria need a browser — see notes + DECISIONS.md §F017) |
 
 ## Goal
 
@@ -84,13 +84,38 @@ src/app/page.tsx                           (modify) — stats bar placeholder �
       (matches F013's cube bracket), UNSTABLE badge appears if conditions force
       instability (set μ to min × U to max via future controls — for now test by
       temporarily calling `set_conditions` with extremes in the probe).
+      **PARTIALLY VERIFIED HEADLESS, box unticked (see DECISIONS.md §F017):**
+      `steps_done()` advances exactly (60/200/500/1000 on the nose), so the
+      steps/s-from-delta mapping is sound; the `cd === −1` → "—" path is live
+      at ≤ 60 steps; instability arrives on its own by ~200 steps at
+      defaults + any cube (20³ and 8³ both flip `stable=false`, `cd` →
+      finite garbage ~1e35–1e38), so the UNSTABLE data path is exercised but
+      the "plausible cd after 200+ steps" half is unachievable pre-F019
+      recovery. fps ≈ rAF and the ±10 % steps/s ratio need a browser.
 - [ ] No model loaded: all placeholders, no errors in console.
+      **PLACEHOLDER RENDERING VERIFIED, browser check outstanding:** the
+      production prerender (`npm run build`, no wasm / no model on the
+      server) emits the placeholder bar without crashing; console-error
+      freedom needs a browser pass.
 - [ ] Panel updates visibly at 4 Hz but app FPS unchanged with panel hidden vs
       shown (no measurable cost).
+      **NOT VERIFIED — needs a browser** (poll loop is `setInterval` 250 ms
+      over a small footer subtree; the rAF fps ticker is one timestamp
+      subtraction per frame by inspection).
 - [ ] kPa conversions correct: p_max at defaults ≈ q_ref ≈ 0.14 kPa
       (0.5·1.2041·15² = 135.5 Pa) ± 30 %.
+      **PARTIALLY VERIFIED HEADLESS (see DECISIONS.md §F017.3):** `q_ref` is
+      exact at 135.46 Pa; 20³ cube at 60 stable steps gives p_max 173.8 Pa
+      (ratio 1.28, inside the band) — but there is no stable *developed*
+      state at defaults, so the criterion as printed (a running value) is
+      left unticked.
 - [ ] `tabular-nums` prevents width jitter while numbers change.
-- [ ] `npm run lint` / `npm run build` pass.
+      **CLASS PRESENT, visual check outstanding:** values carry
+      `tabular-nums`, the bar height is fixed (`h-16` footer), cells
+      `truncate` — jitter prevention itself needs a browser.
+- [x] `npm run lint` / `npm run build` pass.
+      (Verified 2026-09-08: lint zero errors/warnings, build succeeds;
+      `node --test src/lib/sim/types.test.mjs` 12/12 pass.)
 
 ## Test plan
 

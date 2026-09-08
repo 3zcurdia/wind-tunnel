@@ -6,6 +6,59 @@ stay consistent with `ARCHITECTURE.md`.
 
 ---
 
+## 2026-09-08 — F017 (live stats panel)
+
+Headless probes below drive the real `--target web` artifact via `initSync`
+(F014/F016 pattern), default physical conditions
+(`set_conditions(15, 101.325, 1.81e-5, 1.0, 0.25)` → `u ≈ 0.0737`,
+`τ = 0.505` floor-clamped, `unstable: true`, `Re = 249472`), `step(1)` +
+`advect_particles(1.0)` per step. All numbers Apple M4 Pro, Node 26.8.1.
+
+1. **Acceptance criterion 1's operating point ("cube + defaults → plausible
+   cd after 200+ steps") is unachievable — the run is always unstable by
+   then.** Both the 20³ cube ([35..55)×[14..34)²) and the F014 8³ fixture
+   ([40..48)×[20..28)²) flip `stable=false` between 60 and 200 steps; by 200
+   steps `cd`/`drag_n` are finite garbage (`3.1e35` for 8³, `4.3e35` for
+   20³), vertex pressures/anchors zero out (the refresh bails), and particles
+   die off (8³: 2000 → 43 alive by 500 steps; 20³: → 16). Cause is the
+   documented F009 §2 regime (`τ = 0.505` floor, `Re_lat ≈ 1000` unsteady
+   territory — F013's stable numbers used pinned `(0.08, 0.56)` for exactly
+   this reason), not a panel bug. Smallest consistent action: implement the
+   panel spec-verbatim (sentinel → "—", stats rendered as-is, UNSTABLE badge
+   on `stable=false` — no extra magnitude guards, which would deviate from
+   the spec and steal F013's cd semantics), leave the "plausible cd" half of
+   criterion 1 unticked, and route recovery to F019 (the roadmap risk
+   register already assigns "auto-throttle + soft restart" there). The
+   UNSTABLE half of the criterion is trivially satisfiable — verified at the
+   wasm level; the red pulsing badge itself needs a browser.
+2. **Empty tunnel is stable indefinitely** (no mesh: `stable=true` at 200 /
+   500 / 1000 steps, `cd` stays `−1`, all 2000 particles alive) — so the
+   spec's empty state (placeholders + gray badge, driven by "no model")
+   never shows garbage. Verified to 1000 steps.
+3. **kPa criterion holds only transiently pre-divergence.** `q_ref` is exact:
+   135.46 Pa = 0.135 kPa (`½·1.2041·15²`). 20³ cube at 60 steps (still
+   stable): `p_max = 173.8 Pa` = 0.17 kPa, ratio to q 1.28 — inside the
+   ±30 % band; but there is no *stable developed* state at defaults, and the
+   8³ cube at 60 steps reads `p_max = 32 Pa` (field not yet developed) before
+   blowing up. Criterion left unticked with this note.
+4. **Panel renders finite-garbage `cd` (~40 chars) once unstable — accepted,
+   not guarded.** Clamping absurd-but-finite magnitudes to "—" would be a
+   silent spec deviation (`formatCd` only maps the contracted
+   null/`−1`/non-finite cases); the red pulsing UNSTABLE badge next to it is
+   the designed signal, and the bar's `truncate` + `overflow-x-auto` contain
+   the width. F019's auto-recovery removes the condition.
+5. **`steps_done()` advances exactly** (60/200/500/1000 on the nose), so the
+   bridge's steps/s-from-delta mapping is sound; `fps` comes from the
+   JS-side rAF ticker (browser check outstanding — headless has no rAF).
+
+Observed values: `q_ref = 135.46 Pa`; 20³ @60: `p ∈ [−240.9, 173.8] Pa`,
+`cd = −1`, `stable=true`; 8³ @60: `p ∈ [−128.5, 32.0] Pa`; 8³ @1000:
+`cd = 4.97e38`, `stable=false`, 3 particles alive; empty @1000:
+`stable=true`, `cd = −1`, 2000 alive; `step(1)` mean 48.8 ms (matches the
+F010 47.7 ms datapoint).
+
+---
+
 ## 2026-09-08 — F016 (smoke tracer lines)
 
 1. **Smoke `dt` is 1.0 lattice time unit per step, not `LatticeParams.dt`.**

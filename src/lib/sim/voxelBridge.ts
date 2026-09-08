@@ -3,7 +3,7 @@ import { HeatmapOverlay } from "@/lib/viz/HeatmapOverlay";
 import { ParticleSystem } from "@/lib/viz/ParticleSystem";
 import { SmokeTracers } from "@/lib/viz/SmokeTracers";
 import type { SceneManager } from "@/components/viewport/SceneManager";
-import { DOMAIN } from "@/lib/sim/types";
+import { DOMAIN, type SimReadout } from "@/lib/sim/types";
 import { loadWasm, type WasmApi } from "@/lib/sim/wasm";
 
 export interface VoxelMeshResult {
@@ -686,4 +686,164 @@ export function startSmokeDriver(manager: SceneManager): () => void {
     tracers.dispose();
     if (smokeTracers === tracers) smokeTracers = null;
   };
+}
+
+// ── TEMPORARY live-stats readout (F017; deleted in F019) ────────────────
+// Until `SimEngine` exists, this section assembles `SimReadout` (the durable
+// F017 contract from `types.ts`) from the F013 `stats()` record plus the
+// F012 `pressure_anchors()` q_ref. `StatsPanel` polls `getReadout()` at
+// 4 Hz; F019 provides the same shape from `SimulationContext` and this whole
+// section goes away (component unchanged).
+//
+// Model identity (`modelName` / `modelTriangles`) comes from `ModelContext`,
+// which this React-free module cannot read — the bridge reports both as
+// null and `StatsPanel` overwrites them from the context on every poll.
+
+/**
+ * Structural view of the F013 stats ABI (same TEMPORARY-bridge pattern as
+ * above — folded into `SimEngine` in F019).
+ *
+ * `stats()` returns a wasm-bindgen class instance (heap-allocated per call,
+ * like `pressure_anchors()`), so every read must end in `.free()`.
+ */
+type StatsRecordLike = {
+  readonly cd: number;
+  readonly drag_n: number;
+  readonly p_min_pa: number;
+  readonly p_max_pa: number;
+  readonly re: number;
+  readonly steps: bigint;
+  readonly active_particles: number;
+  readonly stable: boolean;
+  free(): void;
+};
+
+type StatsWasmApi = PressureWasmApi & {
+  stats(): StatsRecordLike;
+};
+
+/** EMA weight for the JS-side rAF frame counter (spec §2). */
+const FPS_EMA_ALPHA = 0.1;
+/** Longer gaps are discarded (background-tab return would drag the EMA). */
+const FPS_SAMPLE_MAX_MS = 500;
+
+let fpsEma = 0;
+let fpsTickerStarted = false;
+let lastFrameMs = 0;
+
+/**
+ * Lazily start the module-lifetime rAF ticker feeding `fpsEma`. One
+ * timestamp subtraction per frame — negligible next to the sim drivers.
+ * No stop function: the engine singleton this serves is itself
+ * process-lifetime, and F019 deletes the whole section.
+ */
+function ensureFpsTicker(): void {
+  if (fpsTickerStarted) return;
+  if (
+    typeof window === "undefined" ||
+    typeof window.requestAnimationFrame !== "function"
+  ) {
+    return;
+  }
+  fpsTickerStarted = true;
+  lastFrameMs = window.performance.now();
+  const tick = (nowMs: number): void => {
+    const dt = nowMs - lastFrameMs;
+    lastFrameMs = nowMs;
+    if (dt > 0 && dt <= FPS_SAMPLE_MAX_MS) {
+      const fps = 1000 / dt;
+      fpsEma = fpsEma === 0 ? fps : fpsEma + FPS_EMA_ALPHA * (fps - fpsEma);
+    }
+    window.requestAnimationFrame(tick);
+  };
+  window.requestAnimationFrame(tick);
+}
+
+let statsApi: StatsWasmApi | null = null;
+
+/** Non-blocking engine grab: first polls stay on placeholders, later live. */
+function primeStatsApi(): void {
+  if (statsApi !== null) return;
+  void ensureEngine().then(
+    (api) => {
+      statsApi = api as StatsWasmApi;
+    },
+    () => {
+      // Engine unavailable (e.g. fresh clone without `npm run wasm:build`):
+      // stay on placeholders; the next poll retries.
+    },
+  );
+}
+
+let lastSteps: number | null = null;
+let lastStepsMs = 0;
+
+/**
+ * TEMPORARY stats assembler (F017 §1; `SimEngine.getReadout()` in F019).
+ * Synchronous and total (never throws — a failing ABI drops back to null
+ * so the 250 ms poll loop survives a poisoned instance). Null until the
+ * engine resolves; `modelName` / `modelTriangles` are always null here
+ * (see the section note — the panel fills them from `ModelContext`).
+ */
+export function getReadout(): SimReadout | null {
+  ensureFpsTicker();
+  primeStatsApi();
+  const api = statsApi;
+  if (api === null) return null;
+  let record: StatsRecordLike | null = null;
+  try {
+    record = api.stats();
+    try {
+      // Steps/s from the step-counter delta across polls (spec §2). The
+      // record's `steps` is the same counter `steps_done()` reads, so one
+      // call serves both. First poll has no baseline → 0.
+      const steps = Number(record.steps);
+      const nowMs = performance.now();
+      let stepsPerSecond = 0;
+      if (lastSteps !== null) {
+        const dtS = (nowMs - lastStepsMs) / 1000;
+        if (dtS > 0) {
+          stepsPerSecond = Math.max(0, (steps - lastSteps) / dtS);
+        }
+      }
+      lastSteps = steps;
+      lastStepsMs = nowMs;
+
+      // `StatsRecord` carries no stagnation reference — it comes from the
+      // F012 anchors (wasm-heap-allocated per call, freed before returning).
+      const anchors = api.pressure_anchors();
+      let qRefPa = 0;
+      try {
+        qRefPa = anchors.q_ref_pa;
+      } finally {
+        anchors.free();
+      }
+
+      // F013 sentinel: cd === −1 means "not yet meaningful" (< 200 steps
+      // since reset or no mesh) — surfaced as null so the panel renders
+      // "—" (same for the drag force, which shares the EMA).
+      const meaningful =
+        Number.isFinite(record.cd) && record.cd !== -1;
+      return {
+        fps: fpsEma,
+        stepsPerSecond,
+        cd: meaningful ? record.cd : null,
+        dragN:
+          meaningful && Number.isFinite(record.drag_n) ? record.drag_n : null,
+        pMinPa: Number.isFinite(record.p_min_pa) ? record.p_min_pa : 0,
+        pMaxPa: Number.isFinite(record.p_max_pa) ? record.p_max_pa : 0,
+        qRefPa: Number.isFinite(qRefPa) ? qRefPa : 0,
+        re: Number.isFinite(record.re) ? record.re : 0,
+        gridDims: [DOMAIN.nx, DOMAIN.ny, DOMAIN.nz],
+        activeParticles: record.active_particles,
+        stable: record.stable,
+        modelName: null,
+        modelTriangles: null,
+      };
+    } finally {
+      record.free();
+    }
+  } catch {
+    return null;
+  }
 }
