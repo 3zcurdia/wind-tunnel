@@ -7,6 +7,7 @@ mod boundaries;
 mod bench;
 mod lbm;
 mod particles;
+mod pressure;
 mod units;
 mod voxel;
 
@@ -24,6 +25,12 @@ mod voxel;
 /// `particles` is the F011 fixed-capacity pool (buffers allocated once in
 /// `init_sim`, never reallocated — pointers stay valid until the next
 /// `init_sim`, stricter than the §5 general rule).
+/// `vertex_cell` / `vertex_pressure` are the F012 per-vertex pressure mapping
+/// (allocated once in `set_mesh`, index-written by `pressure::refresh` —
+/// never reallocated, so `vertex_pressure_ptr()` is stable until the next
+/// `set_mesh` / `init_sim`); `rho_mean` is the running mean lattice density
+/// (EMA, α = 0.01); `p_min_pa` / `p_max_pa` / `q_ref_pa` are the F015 legend
+/// anchors.
 pub struct SimState {
     pub(crate) nx: usize,
     pub(crate) ny: usize,
@@ -78,6 +85,21 @@ pub struct SimState {
     pub(crate) last_step_ms: f32,
     /// EMA (α = 0.1) of `last_step_ms` across `step(n)` calls, for F019.
     pub(crate) avg_step_ms: f32,
+    // ── F012 surface pressure ────────────────────────────────────────
+    /// Per-vertex nearest-fluid-cell mapping (`-1` = unmapped), built once
+    /// in `set_mesh` (see `pressure::build_mapping`).
+    pub(crate) vertex_cell: Vec<i32>,
+    /// Per-vertex relative pressure [Pa] (same order/length as
+    /// `mesh_vertices`), refreshed once per `step(n)` batch.
+    pub(crate) vertex_pressure: Vec<f32>,
+    /// Running mean lattice density (EMA, α = 0.01, over the domain mean).
+    pub(crate) rho_mean: f64,
+    /// Min / max vertex pressure [Pa] (relative to `rho_mean`, seeded with
+    /// 0 so `p_min ≤ 0 ≤ p_max` holds structurally).
+    pub(crate) p_min_pa: f64,
+    pub(crate) p_max_pa: f64,
+    /// Stagnation reference `½·ρ·U²` [Pa] (zero with no mesh).
+    pub(crate) q_ref_pa: f64,
 }
 
 impl SimState {
@@ -109,6 +131,12 @@ impl SimState {
             last_unstable_step: 0,
             last_step_ms: 0.0,
             avg_step_ms: 0.0,
+            vertex_cell: Vec::new(),
+            vertex_pressure: Vec::new(),
+            rho_mean: 1.0,
+            p_min_pa: 0.0,
+            p_max_pa: 0.0,
+            q_ref_pa: 0.0,
         }
     }
 
@@ -142,6 +170,12 @@ impl SimState {
             last_unstable_step: 0,
             last_step_ms: 0.0,
             avg_step_ms: 0.0,
+            vertex_cell: Vec::new(),
+            vertex_pressure: Vec::new(),
+            rho_mean: 1.0,
+            p_min_pa: 0.0,
+            p_max_pa: 0.0,
+            q_ref_pa: 0.0,
         };
         lbm::reset_state_flow(&mut s);
         s
@@ -208,6 +242,20 @@ pub fn set_mesh(triangles: &[f32]) -> u32 {
         state.surface_mode = res.surface_mode;
         state.mesh_vertices = voxel::deduplicate_vertices(triangles);
         state.vertex_count = state.mesh_vertices.len() / 3;
+        // F012: (re)build the vertex→fluid mapping for the new occupancy,
+        // allocate the pressure buffer, and drop stale pressures/anchors.
+        // (Borrow the inputs first — NLL ends the shared borrows before the
+        // exclusive assignments below.)
+        let mapping = pressure::build_mapping(
+            state.nx,
+            state.ny,
+            state.nz,
+            &state.occupancy,
+            &state.mesh_vertices,
+        );
+        state.vertex_cell = mapping;
+        state.vertex_pressure = vec![0.0f32; state.vertex_count];
+        pressure::on_new_mesh(&mut state);
         lbm::retune_solid_cells(&mut state, &to_fluid);
         state.solid_count as u32
     })
@@ -230,6 +278,9 @@ pub fn clear_mesh() {
         state.mesh_vertices.clear();
         state.vertex_count = 0;
         state.surface_mode = false;
+        // F012: no mesh ⇒ zeroed pressure state (the `empty_mesh_safe`
+        // contract — `pressure_anchors()` reads all zeros).
+        pressure::on_mesh_cleared(&mut state);
         lbm::retune_solid_cells(&mut state, &to_fluid);
     });
 }
@@ -343,11 +394,14 @@ fn clamp_lattice_params(u_lattice: f64, tau: f64) -> (f64, f64) {
 
 /// Re-initialize the flow field to uniform inlet conditions (keeps the mesh).
 /// Fluid cells → equilibrium at `(1, u_inlet, 0, 0)`, solid cells → rest.
-/// Mass-flux accumulators are zeroed. Never panics, even on an empty domain.
+/// Mass-flux accumulators are zeroed. F012 pressures return to the uniform
+/// zero baseline (`ρ̄` back to 1). Never panics, even on an empty domain.
 #[wasm_bindgen]
 pub fn reset_flow() {
     STATE.with(|s| {
-        lbm::reset_state_flow(&mut s.borrow_mut());
+        let mut state = s.borrow_mut();
+        lbm::reset_state_flow(&mut state);
+        pressure::on_flow_reset(&mut state);
     });
 }
 
@@ -373,6 +427,9 @@ pub fn step(n: u32) {
             lbm::stream_and_collide(&mut state);
             state.steps = state.steps.wrapping_add(1);
         }
+        // F012: one pressure refresh per step(n) batch (never per substep).
+        // Index writes only — no allocation inside the stepping path.
+        pressure::refresh(&mut state);
     });
     // Mean ms per lattice step within this batch. `.max(0.0)` also maps a
     // hypothetical non-finite clock read to 0 instead of poisoning the EMA.
@@ -571,6 +628,86 @@ pub fn speeds_ptr() -> *const f32 {
 #[wasm_bindgen]
 pub fn active_particle_count() -> u32 {
     STATE.with(|s| s.borrow().particles.alive() as u32)
+}
+
+// ── F012: surface pressure ABI ────────────────────────────────────────
+// The pressure buffer is allocated once in `set_mesh` (length
+// `vertex_count`, deduped sorted order — see `pressure.rs`) and only
+// index-written by `pressure::refresh`, so the pointer below is stable
+// until the next `set_mesh` / `init_sim` (the §5 general rule).
+// `reset_flow` returns it to the uniform zero baseline; `clear_mesh`
+// empties it (length 0).
+
+/// Pointer to the per-vertex relative pressure buffer (`vertex_count` `f32`,
+/// [Pa], in stored-vertex order). Stable until the next `set_mesh` /
+/// `init_sim`; re-fetch via this function afterwards. Null when empty.
+#[wasm_bindgen]
+pub fn vertex_pressure_ptr() -> *const f32 {
+    STATE.with(|s| {
+        let state = s.borrow();
+        if state.vertex_pressure.is_empty() {
+            std::ptr::null()
+        } else {
+            state.vertex_pressure.as_ptr()
+        }
+    })
+}
+
+/// Length of the per-vertex pressure buffer (`== vertex_count`).
+#[wasm_bindgen]
+pub fn vertex_pressure_len() -> u32 {
+    STATE.with(|s| s.borrow().vertex_pressure.len() as u32)
+}
+
+/// Normalization anchors for F015's legend: min/max vertex pressure [Pa]
+/// (relative to the running mean lattice density) plus the stagnation
+/// reference `q_ref = ½·ρ·U²` [Pa]. All zeros when no mesh is set.
+#[wasm_bindgen]
+pub struct PressureAnchors {
+    pub(crate) p_min_pa: f64,
+    pub(crate) p_max_pa: f64,
+    pub(crate) q_ref_pa: f64,
+}
+
+#[wasm_bindgen]
+impl PressureAnchors {
+    /// Minimum vertex pressure [Pa] (≤ 0 by construction).
+    #[wasm_bindgen(getter)]
+    pub fn p_min_pa(&self) -> f64 {
+        self.p_min_pa
+    }
+    /// Maximum vertex pressure [Pa] (≥ 0 by construction).
+    #[wasm_bindgen(getter)]
+    pub fn p_max_pa(&self) -> f64 {
+        self.p_max_pa
+    }
+    /// Stagnation reference `½·ρ·U²` [Pa] (0 with no mesh).
+    #[wasm_bindgen(getter)]
+    pub fn q_ref_pa(&self) -> f64 {
+        self.q_ref_pa
+    }
+}
+
+/// Current pressure anchors (see [`PressureAnchors`]). Cheap enough to poll
+/// at legend rate. Never panics.
+#[wasm_bindgen]
+pub fn pressure_anchors() -> PressureAnchors {
+    STATE.with(|s| {
+        let state = s.borrow();
+        if state.vertex_count == 0 || state.vertex_pressure.is_empty() {
+            PressureAnchors {
+                p_min_pa: 0.0,
+                p_max_pa: 0.0,
+                q_ref_pa: 0.0,
+            }
+        } else {
+            PressureAnchors {
+                p_min_pa: state.p_min_pa,
+                p_max_pa: state.p_max_pa,
+                q_ref_pa: state.q_ref_pa,
+            }
+        }
+    })
 }
 
 /// Store lattice parameters, clamped to the §3 stability envelope

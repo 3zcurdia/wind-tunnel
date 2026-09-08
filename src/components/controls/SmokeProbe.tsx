@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { runSmokeProbe } from "@/lib/sim/voxelBridge";
 
-/** TEMPORARY probe button (F011) — exercises spawn/step/advect end-to-end. Deleted in F019. */
+/** TEMPORARY probe button (F011, pressure anchors added in F012) — exercises spawn/step/advect end-to-end. Deleted in F019. */
 export function SmokeProbe() {
   const [label, setLabel] = useState("Run smoke probe");
   const [busy, setBusy] = useState(false);
@@ -15,7 +15,7 @@ export function SmokeProbe() {
     try {
       const result = await runSmokeProbe();
       setLabel(
-        `Smoke: ${result.active} active · ū=${result.meanSpeed.toFixed(4)}`,
+        `Smoke: ${result.active} active · ū=${result.meanSpeed.toFixed(4)} · p∈[${result.pMinPa.toFixed(1)}, ${result.pMaxPa.toFixed(1)}] q=${result.qRefPa.toFixed(1)} Pa`,
       );
     } catch {
       setLabel("Smoke probe failed");

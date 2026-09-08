@@ -6,6 +6,82 @@ stay consistent with `ARCHITECTURE.md`.
 
 ---
 
+## 2026-09-08 — F012 (surface pressure → per-vertex scalars)
+
+Fixture for everything below: 128×48×48, analytic ball fill r = 12 at the §3
+placement center (44, 24, 24), 802 Fibonacci-sphere + exact-pole vertices,
+u_inlet = 0.08, τ = 0.56 (Re_lat ≈ 96, steady), U = 15 m/s, ρ = 1.2041183,
+Δx = 1/128, Δt = u·Δx/U = 4.1667e-05, 2 000 steps with one `refresh` per
+64-step batch + a final refresh (mirrors `step(64)` batching). All numbers
+`cargo test --release` on Apple M4 Pro; one 2 000-step run ≈ 80 s.
+
+1. **Vertex order follows F006's stored (deduplicated, sorted) list, not the
+   raw triangle-soup order.** The spec's interface contract says "order
+   identical to the vertices JS sent", but F006 stores `deduplicate_vertices`
+   output (quantized, sorted, deduped) and F012 §1 maps "each stored vertex".
+   Mapping over soup order would duplicate work and contradict §1, so the
+   buffer follows the stored order (documented in `pressure.rs` module docs).
+2. **`vertex_pressure_len() -> u32` added (ARCH §5 updated in the same
+   commit, as the spec instructs).** ARCH §5 listed `vertex_pressure_ptr()`
+   with "length == vertex_count" but no accessor; JS cannot infer the
+   *deduped* count from the soup it sent, so a `u32` length export (same shape
+   as `occupancy_len()`) is the smallest consistent addition. `pressure_anchors()`
+   likewise added to §5 with its `{ p_min_pa, p_max_pa, q_ref_pa }` fields.
+3. **Buried-vertex test uses an analytic solid box, not the voxelized star.**
+   The genuine star (octahedron shell + center fan) leaks at 32³
+   (`surface_mode = true`, shell-only — F006 rasterization fidelity, not F012
+   logic), so its interior is fluid and cannot host a buried vertex. Per the
+   spec's own test-plan advice (analytic fills over mesh rasterization), the
+   test pairs the real star *vertex set* (dedup → shell + buried center) with
+   an analytic box [10..22)³: the center is ≥ 6 cells deep (⇒ unmapped → 0.0,
+   finite, no panic) while the ±8 shell vertices stick out into fluid (⇒
+   mapped) — both code paths in one cheap test.
+4. **Stagnation magnitude: observed Cp_max ≈ 1.60, above the spec's 1.4 cap —
+   criterion unticked, test pins reality (F009 pattern).** At the fixture
+   above: p_max = 217.28 Pa vs q_ref = 135.46 Pa (ratio 1.604), max vertex
+   (32.2, 25.0, 25.8) just 9.6° off the −X pole (the 30° half passes with
+   20° margin). The overshoot is the solver's genuine coarse-staircase answer
+   (verified: the mapped cell holds ρ ≈ 1.0151 vs Bernoulli 1.0096 — a field
+   property, not a conversion bug). Operating-point scan: (0.05, 0.6) →
+   2.0×, (0.08, 0.8) → 2.4× — raising τ *worsens* the spike (bounce-back wall
+   error grows with (τ−½)²), while dropping τ toward 0.505 pushes Re_lat past
+   shedding onset (~270) into unsteady, snapshot-fragile territory. So 1.4 is
+   unreachable at any steady, accurate operating point. The test asserts the
+   observed envelope [0.7, 1.8]×q plus a `ratio > 1.4` pin that fails loudly
+   if a future solver change (curved BCs, finer grids) brings the max inside
+   the printed cap.
+5. **Wake-min location: the literal transverse (±y/±z) reading adopted; the
+   x > cx half unticked, test pins reality (F009 pattern).** Observed min:
+   p_min = −175.97 Pa (−1.30×q) at (41.6, 25.0, 35.7) — classical shoulder
+   suction (~78° from the front stagnation point at Re ≈ 96), 12.9° off the
+   +Z axis (the 45° transverse half passes with 30° margin) but 2.4 cells
+   *upstream* of the equator plane (x = cx − 2.4). A min on the downstream
+   centerline is physically out of reach for steady sphere flow (base pressure
+   ≈ −0.5…−0.7×q, measured −72…−98 Pa at the rear pole — always the highest
+   of the lows, never the global min), so the "+X axis" alternative reading
+   would demand the impossible; the "±z/±y" wording is read literally as the
+   transverse axes. Higher-τ scans do push the peak past the equator
+   (x = 45.2 at τ = 0.6/0.8) but wreck stagnation (item 4) — no single steady
+   operating point satisfies both printed halves. The test asserts transverse
+   ≤ 45° + shoulder-away-from-stagnation (> 45° from −X) + suction depth
+   (< −0.5×q) exactly, documents the equator band (x > cx − 3), and pins
+   `x ≤ cx` for loud future review.
+6. **Anchors: `p_min ≤ 0 ≤ p_max` + `q_ref = ½ρU²` exact (all pass);
+   the `≤ 1.5×q_ref` cap shares item 4's fate** (observed 1.60×) — asserted
+   against the same observed envelope with a pointer to item 4, box unticked.
+7. **TEMPORARY probe sets default conditions.** `runSmokeProbe` previously ran
+   with whatever lattice params were stored (and no physical companions ⇒
+   zero anchors). It now calls `set_conditions(15, 101.325, 1.81e-5, 1.0,
+   0.25)` before `reset_flow`, so the returned anchors carry physical
+   magnitudes (q_ref ≈ 135.5 Pa at defaults, per the spec's manual check).
+   Still deleted in F019.
+
+Observed values: q_ref = 135.46 Pa; p_max = 217.28 Pa (1.604×q, 9.6° off
+−X pole); p_min = −175.97 Pa (−1.299×q, 12.9° off +Z, x = cx − 2.4);
+ρ̄ = 0.999707 vs domain mean 0.998946 (EMA lag after the start-up mass
+transient — converges in continuous running); box ABI wiring (24×16×16, 10
+steps): 8 deduped vertices, all pressures finite, q_ref > 0.
+
 ## 2026-09-07 — F003 (Rust→WASM pipeline)
 
 1. **wasm-pack flags adapted.** The spec suggested

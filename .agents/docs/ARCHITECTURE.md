@@ -200,8 +200,17 @@ timing() -> Timing              // Timing { last_step_ms: f32, avg_step_ms: f32 
 particles_ptr() -> *const f32          // len = particle_capacity * 3
 speeds_ptr()   -> *const f32           // per active particle, lattice speed |u|
 active_particle_count() -> u32
-/// Per-mesh-vertex relative pressure scalar, in order of `set_mesh` vertices.
+/// Per-mesh-vertex relative pressure scalar [Pa], in stored-vertex order
+/// (the F006 deduplicated, sorted vertex list — NOT the raw triangle-soup
+/// order; see DECISIONS.md 2026-09-08 F012). Length via
+/// `vertex_pressure_len()`; refreshed once per `step(n)` batch.
 vertex_pressure_ptr() -> *const f32
+vertex_pressure_len() -> u32          // == vertex_count (0 with no mesh)
+/// Normalization anchors for F015's legend (F012): min/max vertex pressure
+/// relative to the running mean, plus the stagnation reference.
+pressure_anchors() -> PressureAnchors
+// PressureAnchors { p_min_pa: f64, p_max_pa: f64, q_ref_pa: f64 }
+//               (all zeros with no mesh)
 /// Obstacle grid, 1 byte per cell (0 empty / 1 solid), row-major as §3.
 occupancy_ptr() -> *const u8
 occupancy_len() -> u32              // grid length in bytes (nx·ny·nz)

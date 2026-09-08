@@ -50,7 +50,7 @@ F003 and can proceed while Phase 1 UI work happens.
 ### Phase 3 — Data Extraction (Rust)
 
 - [x] [F011 — Velocity sampling & particle advection](features/F011-velocity-sampling.md) — `M` `Rust`
-- [ ] [F012 — Surface pressure → per-vertex scalars](features/F012-surface-pressure.md) — `M` `Rust`
+- [x] [F012 — Surface pressure → per-vertex scalars](features/F012-surface-pressure.md) — `M` `Rust`
 - [ ] [F013 — Drag coefficient & flow stats](features/F013-drag-stats.md) — `S` `Rust`
 
 ### Phase 4 — Visualization

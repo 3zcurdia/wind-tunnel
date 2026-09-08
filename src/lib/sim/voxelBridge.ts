@@ -105,9 +105,33 @@ type ParticleWasmApi = WasmApi & {
   active_particle_count(): number;
 };
 
+/**
+ * Structural view of the F012 pressure ABI (same TEMPORARY-bridge pattern as
+ * above — folded into `SimEngine` in F019).
+ */
+type PressureWasmApi = ParticleWasmApi & {
+  set_conditions(
+    uMps: number,
+    pressureKpa: number,
+    viscosityPas: number,
+    domainLengthM: number,
+    charLengthM: number,
+  ): unknown;
+  pressure_anchors(): {
+    p_min_pa: number;
+    p_max_pa: number;
+    q_ref_pa: number;
+  };
+};
+
 export interface SmokeProbeResult {
   active: number;
   meanSpeed: number;
+  /** F012 TEMPORARY: min/max vertex pressure [Pa] after the 60 steps. */
+  pMinPa: number;
+  pMaxPa: number;
+  /** F012 TEMPORARY: stagnation reference ½·ρ·U² [Pa]. */
+  qRefPa: number;
 }
 
 /**
@@ -117,9 +141,14 @@ export interface SmokeProbeResult {
  * (one advect per step), and reports the surviving count plus the mean
  * lattice speed over the active set. Deterministic: `spawn_particles`
  * reseeds, so two consecutive clicks agree exactly.
+ *
+ * F012 extension: sets default physical conditions first (15 m/s, sea-level
+ * air — the manual-check operating point, q_ref ≈ 135.5 Pa) so the pressure
+ * anchors it additionally returns carry physical magnitudes.
  */
 export async function runSmokeProbe(): Promise<SmokeProbeResult> {
-  const api = (await ensureEngine()) as ParticleWasmApi;
+  const api = (await ensureEngine()) as PressureWasmApi;
+  api.set_conditions(15.0, 101.325, 1.81e-5, 1.0, 0.25);
   api.reset_flow();
   api.spawn_particles(2000);
   for (let i = 0; i < 60; i += 1) {
@@ -139,5 +168,13 @@ export async function runSmokeProbe(): Promise<SmokeProbeResult> {
     }
     meanSpeed = sum / active;
   }
-  return { active, meanSpeed };
+  // Synchronous anchor read (plain struct, copied — no view lifetime issue).
+  const anchors = api.pressure_anchors();
+  return {
+    active,
+    meanSpeed,
+    pMinPa: anchors.p_min_pa,
+    pMaxPa: anchors.p_max_pa,
+    qRefPa: anchors.q_ref_pa,
+  };
 }
