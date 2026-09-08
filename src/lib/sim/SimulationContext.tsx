@@ -12,6 +12,7 @@ import {
 } from "react";
 import type { FlowConditions } from "@/lib/sim/conditions";
 import {
+  DEFAULT_QUALITY,
   hasStoredQuality,
   isQualityLevel,
   loadStoredQuality,
@@ -204,9 +205,11 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     SMOKE_HISTORY_DEFAULT,
   );
   const [heatmapEnabled, setHeatmapEnabledState] = useState(true);
-  const [quality, setQualityState] = useState<QualityLevel>(() =>
-    loadStoredQuality(),
-  );
+  // Deterministic initial tier (never read localStorage here — SSR would
+  // render the fallback while the hydration render reads the stored value
+  // and mismatch). The boot effect below applies the stored/probed tier
+  // post-mount, before the buttons enable (`ready` gate).
+  const [quality, setQualityState] = useState<QualityLevel>(DEFAULT_QUALITY);
   const [autoProbed, setAutoProbed] = useState(false);
   const [particlesVisible, setParticlesVisibleState] = useState(true);
   const [voxelDebugVisible, setVoxelDebugVisibleState] = useState(false);
