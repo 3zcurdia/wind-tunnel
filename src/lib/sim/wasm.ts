@@ -13,8 +13,12 @@ export type WasmApi = {
   ping(): string;
   /** Allocate domain & solver state (F006; resets everything). */
   init_sim(nx: number, ny: number, nz: number, particle_capacity: number): void;
-  /** Voxelize domain-space triangles; returns the solid cell count (F006). */
-  set_mesh(triangles: Float32Array): number;
+  /**
+   * Voxelize domain-space triangles (F006; F022: returns `{ solidCount,
+   * skippedTriangles }` — free the result after reading, as `SimEngine`
+   * does).
+   */
+  set_mesh(triangles: Float32Array): SetMeshResult;
   /** Clear the mesh; the grid returns to all-fluid (F006). */
   clear_mesh(): void;
   /** Pointer to the occupancy grid bytes (F006; re-fetch after reallocating). */
@@ -25,6 +29,13 @@ export type WasmApi = {
   surface_mode_flag(): boolean;
   /** Linear memory for zero-copy buffer views (see ARCHITECTURE.md §5). */
   readonly memory: WebAssembly.Memory;
+};
+
+/** Structural view of the generated `SetMeshResult` class (F022). */
+export type SetMeshResult = {
+  readonly solidCount: number;
+  readonly skippedTriangles: number;
+  free(): void;
 };
 
 export class WasmLoadError extends Error {

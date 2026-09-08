@@ -221,8 +221,9 @@ export class SmokeTracers {
    * solid hits / domain exits / non-finite samples, push the ring head, and
    * rewrite the segment positions. Colors are static (index-based fade).
    */
-  update(dt: number, sample: SmokeSampler): void {
-    if (this.disposed) return;
+  update(dt: number, sample: SmokeSampler, stable = true): void {
+    // F022 §3: frozen while unstable — the last frame persists on screen.
+    if (this.disposed || !stable) return;
     if (!Number.isFinite(dt) || dt <= 0) return;
     const count = this.tracerCount;
     const k = this.historyLen;

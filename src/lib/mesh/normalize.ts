@@ -1,5 +1,6 @@
 import { Matrix4, Vector3, type BufferGeometry } from "three";
 import type { GridDims } from "../sim/quality";
+import { AppError } from "../sim/errors";
 import { DOMAIN, DegenerateModelError, type Vec3 } from "../sim/types";
 
 export interface NormalizedModel {
@@ -36,6 +37,22 @@ export function normalizeToDomain(
   if (!bbox) {
     throw new DegenerateModelError("Model has no bounding box");
   }
+  // F022 §2: NaN/Inf coordinates survive some loader paths and poison the
+  // bbox (size/center go non-finite). Fail fast with the degenerate-model
+  // kind instead of propagating garbage into the scale math.
+  if (
+    !Number.isFinite(bbox.min.x) ||
+    !Number.isFinite(bbox.min.y) ||
+    !Number.isFinite(bbox.min.z) ||
+    !Number.isFinite(bbox.max.x) ||
+    !Number.isFinite(bbox.max.y) ||
+    !Number.isFinite(bbox.max.z)
+  ) {
+    throw new AppError(
+      "degenerate-model",
+      "Model has invalid coordinates — cannot simulate",
+    );
+  }
   const size = bbox.getSize(new Vector3());
   const center = bbox.getCenter(new Vector3());
   const longest = Math.max(size.x, size.y, size.z);
@@ -63,6 +80,18 @@ export function normalizeToDomain(
   const outBox = out.boundingBox;
   if (!outBox) {
     throw new DegenerateModelError("Normalization produced no bounding box");
+  }
+  // F022 §2: a model that rounds down to (almost) nothing in the tunnel —
+  // e.g. scale underflowed from non-finite or extreme inputs — cannot be
+  // voxelized meaningfully. By construction the longest side spans 0.25·nx
+  // cells, so this only fires on numeric pathology.
+  const outSize = outBox.getSize(new Vector3());
+  const outLongest = Math.max(outSize.x, outSize.y, outSize.z);
+  if (!Number.isFinite(outLongest) || outLongest < 0.5) {
+    throw new AppError(
+      "degenerate-model",
+      "Model too small relative to tunnel",
+    );
   }
   return {
     geometry: out,

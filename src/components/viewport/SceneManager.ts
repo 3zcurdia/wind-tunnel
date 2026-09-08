@@ -22,6 +22,7 @@ import {
   WebGLRenderer,
 } from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { AppError } from "@/lib/sim/errors";
 import type { GridDims } from "@/lib/sim/quality";
 import { DOMAIN } from "@/lib/sim/types";
 import { VoxelDebugView } from "./VoxelDebugView";
@@ -111,6 +112,7 @@ export class SceneManager {
   private readonly controls: OrbitControls;
   private readonly resizeObserver: ResizeObserver;
   private readonly canvasParent: HTMLElement;
+  private readonly canvas: HTMLCanvasElement;
   private readonly layers: Map<DomainLayers, Group> = new Map();
   private readonly subscribers: Set<FrameCallback> = new Set();
   private readonly domainGroup: Group = new Group();
@@ -124,12 +126,72 @@ export class SceneManager {
   private rafHandle: number | null = null;
   private lastFrameTime: number = 0;
   private disposed = false;
+  /** F022 §4: true between `webglcontextlost` and `webglcontextrestored`. */
+  private contextLost = false;
+  /** F022 §4: subscribers for context loss / restore (unsubscribe on use). */
+  private readonly contextLostListeners: Set<() => void> = new Set();
+  private readonly contextRestoredListeners: Set<() => void> = new Set();
+  /**
+   * F022 §4: `preventDefault` keeps the restore path alive (without it the
+   * loss is permanent); the loop pauses and the page overlay owns the UI.
+   */
+  private readonly handleWebGLContextLost = (event: Event): void => {
+    event.preventDefault();
+    if (this.contextLost || this.disposed) return;
+    this.contextLost = true;
+    this.stop();
+    for (const cb of this.contextLostListeners) {
+      try {
+        cb();
+      } catch (err) {
+        console.error("[viewport] context-lost listener failed", err);
+      }
+    }
+  };
+  /**
+   * F022 §4: re-upload SceneManager-owned resources (domain box, grid,
+   * lights, model material) and resume. Shader programs recompile via
+   * `needsUpdate`; buffer attributes re-upload on the next flagged write
+   * (viz per-frame updates re-flag everything anyway). Viz classes holding
+   * GL state re-attach through `onContextRestored`.
+   */
+  private readonly handleWebGLContextRestored = (): void => {
+    if (!this.contextLost || this.disposed) return;
+    this.scene.traverse((obj) => {
+      const typed = obj as unknown as {
+        geometry?: { attributes: Record<string, { needsUpdate: boolean }> };
+        material?: { needsUpdate: boolean } | { needsUpdate: boolean }[];
+      };
+      const geometry = typed.geometry;
+      if (geometry) {
+        for (const attr of Object.values(geometry.attributes)) {
+          attr.needsUpdate = true;
+        }
+      }
+      const material = typed.material;
+      if (Array.isArray(material)) {
+        for (const entry of material) entry.needsUpdate = true;
+      } else if (material) {
+        material.needsUpdate = true;
+      }
+    });
+    this.contextLost = false;
+    this.start();
+    for (const cb of this.contextRestoredListeners) {
+      try {
+        cb();
+      } catch (err) {
+        console.error("[viewport] context-restored listener failed", err);
+      }
+    }
+  };
   private modelMesh: Mesh | null = null;
   private voxelView: VoxelDebugView | null = null;
   private voxelVisible = false;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvasParent = canvas.parentElement ?? document.body;
+    this.canvas = canvas;
 
     this.renderer = new WebGLRenderer({
       canvas,
@@ -189,6 +251,13 @@ export class SceneManager {
     this.resizeObserver.observe(this.canvasParent);
     this.resize();
 
+    // F022 §4: context-loss plumbing (removed again in dispose()).
+    canvas.addEventListener("webglcontextlost", this.handleWebGLContextLost);
+    canvas.addEventListener(
+      "webglcontextrestored",
+      this.handleWebGLContextRestored,
+    );
+
     this.lastFrameTime = performance.now();
   }
 
@@ -224,7 +293,7 @@ export class SceneManager {
 
   getLayer(name: DomainLayers): Group {
     const group = this.layers.get(name);
-    if (!group) throw new Error(`Unknown layer: ${name}`);
+    if (!group) throw new AppError("unknown", "Unknown viewport layer");
     return group;
   }
 
@@ -316,6 +385,16 @@ export class SceneManager {
     if (this.disposed) return;
     this.disposed = true;
     this.stop();
+    this.canvas.removeEventListener(
+      "webglcontextlost",
+      this.handleWebGLContextLost,
+    );
+    this.canvas.removeEventListener(
+      "webglcontextrestored",
+      this.handleWebGLContextRestored,
+    );
+    this.contextLostListeners.clear();
+    this.contextRestoredListeners.clear();
     this.cameraTween = null;
     this.subscribers.clear();
     this.voxelView?.dispose();
@@ -439,6 +518,36 @@ export class SceneManager {
   /** Show/hide the domain box edges, ground grid, and inlet marker (F020). */
   setDomainBoxVisible(on: boolean): void {
     this.domainGroup.visible = on;
+  }
+
+  /** True between `webglcontextlost` and `webglcontextrestored` (F022 §4). */
+  isContextLost(): boolean {
+    return this.contextLost;
+  }
+
+  /**
+   * Subscribe to graphics-context loss (F022 §4): the page overlay shows
+   * "Graphics context lost — Reload" from this. Returns an unsubscribe
+   * function — call it on unmount.
+   */
+  onContextLost(cb: () => void): () => void {
+    this.contextLostListeners.add(cb);
+    return () => {
+      this.contextLostListeners.delete(cb);
+    };
+  }
+
+  /**
+   * Subscribe to graphics-context restore (F022 §4): SceneManager-owned
+   * objects (box/grid/lights/model) are rebuilt internally before these
+   * fire; viz classes holding GL state must re-attach through this list.
+   * Returns an unsubscribe function — call it on unmount.
+   */
+  onContextRestored(cb: () => void): () => void {
+    this.contextRestoredListeners.add(cb);
+    return () => {
+      this.contextRestoredListeners.delete(cb);
+    };
   }
 
   /** Current lattice grid in cells (F021 runtime state). */

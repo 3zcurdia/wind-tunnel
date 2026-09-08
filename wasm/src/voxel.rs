@@ -37,6 +37,12 @@ pub struct VoxelizationResult {
     pub interior_count: usize,
     /// True when the mesh looked leaky and only the shell was kept.
     pub surface_mode: bool,
+    /// Triangles skipped by the F022 pathological swept-range cap (their
+    /// unclamped voxel footprint exceeded 2× the grid volume — inverted or
+    /// far-flung geometry that would otherwise stall rasterization).
+    /// Non-finite triangles are still skipped silently (pre-existing rule)
+    /// and are NOT counted here.
+    pub skipped_triangles: usize,
 }
 
 /// Rasterize a triangle soup (flat `[x0,y0,z0, x1,y1,z1, x2,y2,z2, …]`, domain
@@ -55,14 +61,23 @@ pub fn voxelize(nx: usize, ny: usize, nz: usize, triangles: &[f32]) -> Voxelizat
         surface_count: 0,
         interior_count: 0,
         surface_mode: false,
+        skipped_triangles: 0,
     };
     if total == 0 || triangles.is_empty() || triangles.len() % 9 != 0 {
         return empty();
     }
     let tri_count = triangles.len() / 9;
+    // F022 pathological guard: a triangle whose unclamped voxel footprint
+    // exceeds 2× the grid volume (inverted windings with huge coordinates,
+    // far-flung garbage) would rasterize the whole clamped grid for nothing.
+    // Skip it and count it. Compared in f64 so extreme coordinates (1e30)
+    // stay ordered without integer overflow; the clamped loop below is then
+    // bounded by the grid volume per triangle.
+    let sweep_cap = 2.0 * total as f64;
 
     // ── Step 1 — surface rasterization ──────────────────────────────
     let mut is_surface = vec![false; total];
+    let mut skipped_triangles = 0usize;
     for t in 0..tri_count {
         let base = t * 9;
         let v0 = [
@@ -89,6 +104,15 @@ pub fn voxelize(nx: usize, ny: usize, nz: usize, triangles: &[f32]) -> Voxelizat
         let max_y = v0[1].max(v1[1]).max(v2[1]);
         let min_z = v0[2].min(v1[2]).min(v2[2]);
         let max_z = v0[2].max(v1[2]).max(v2[2]);
+
+        // F022 pathological cap (unclamped footprint vs 2× grid volume).
+        let sweep = (f64::from(max_x - min_x) + 1.0)
+            * (f64::from(max_y - min_y) + 1.0)
+            * (f64::from(max_z - min_z) + 1.0);
+        if sweep > sweep_cap {
+            skipped_triangles += 1;
+            continue;
+        }
 
         let x0 = (min_x.floor() as i64).clamp(0, nx as i64 - 1);
         let x1 = (max_x.floor() as i64).clamp(0, nx as i64 - 1);
@@ -255,6 +279,7 @@ pub fn voxelize(nx: usize, ny: usize, nz: usize, triangles: &[f32]) -> Voxelizat
         surface_count,
         interior_count: final_interior,
         surface_mode,
+        skipped_triangles,
     }
 }
 
@@ -592,9 +617,83 @@ mod tests {
         // Length not divisible by 9.
         let res = voxelize(16, 16, 16, &[1.0, 2.0, 3.0, 4.0]);
         assert_eq!(res.solid_count, 0);
+        assert_eq!(res.skipped_triangles, 0);
         assert!(res.occupancy.iter().all(|&c| c == 0));
         // Empty array.
         let res = voxelize(16, 16, 16, &[]);
         assert_eq!(res.solid_count, 0);
+        assert_eq!(res.skipped_triangles, 0);
+    }
+
+    /// F022: a triangle whose unclamped swept range exceeds 2× the grid
+    /// volume is skipped and counted — voxelization completes instead of
+    /// rasterizing the whole clamped grid for garbage geometry.
+    #[test]
+    fn pathological_swept_triangle_skipped_and_counted() {
+        // 16³ grid: volume 4096, cap 8192. One well-formed small triangle
+        // plus one spanning ±1e6 on every axis (sweep ≈ 8e18 ≫ cap).
+        let mut tris: Vec<f32> = vec![1.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 2.0, 1.0];
+        tris.extend_from_slice(&[
+            -1.0e6, -1.0e6, -1.0e6, 1.0e6, -1.0e6, -1.0e6, -1.0e6, 1.0e6, 1.0e6,
+        ]);
+        // A second pathological triangle (inverted/duplicate-style: two
+        // vertices at f32 extremes, third near the domain).
+        tris.extend_from_slice(&[
+            f32::MAX, f32::MAX, f32::MAX, 8.0, 8.0, 8.0, 8.0, 8.5, 8.0,
+        ]);
+        let res = voxelize(16, 16, 16, &tris);
+        assert_eq!(
+            res.skipped_triangles, 2,
+            "both over-swept triangles must be counted"
+        );
+        // The surviving small triangle still rasterizes (shell fallback: a
+        // single triangle can never enclose interior).
+        assert!(res.solid_count > 0, "valid triangle must still voxelize");
+        assert_eq!(res.surface_mode, true);
+        // Non-finite triangles stay silently skipped and uncounted.
+        let nan_tris: Vec<f32> = vec![
+            f32::NAN, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+        ];
+        let res = voxelize(16, 16, 16, &nan_tris);
+        assert_eq!(res.skipped_triangles, 0);
+        assert_eq!(res.solid_count, 0);
+    }
+
+    /// F022 §2 acceptance: a 200k-triangle plane mesh voxelizes in < 2 s.
+    /// The plane is axis-aligned at mid-domain, subdivided into a dense grid
+    /// of small triangles (the hostile "single-triangle soup exploded into
+    /// slivers" shape) — each rasterizes a handful of cells.
+    #[test]
+    fn plane_mesh_200k_triangles_completes_under_2s() {
+        // 316×316 quads × 2 tris ≈ 199 712 triangles, all in the z = 24
+        // plane, spanning x/y ∈ [8, 120) on a 128×48×48 grid (clamped in y).
+        let n = 316usize;
+        let mut tris = Vec::with_capacity(n * n * 2 * 9);
+        for i in 0..n {
+            for j in 0..n {
+                let x0 = 8.0 + (112.0 * i as f32) / n as f32;
+                let x1 = 8.0 + (112.0 * (i + 1) as f32) / n as f32;
+                let y0 = 8.0 + (112.0 * j as f32) / n as f32;
+                let y1 = 8.0 + (112.0 * (j + 1) as f32) / n as f32;
+                let z = 24.0;
+                tris.extend_from_slice(&[x0, y0, z, x1, y0, z, x0, y1, z]);
+                tris.extend_from_slice(&[x1, y0, z, x1, y1, z, x0, y1, z]);
+            }
+        }
+        assert!(
+            tris.len() / 9 > 190_000,
+            "fixture must hold ~200k triangles (got {})",
+            tris.len() / 9
+        );
+        let t0 = std::time::Instant::now();
+        let res = voxelize(128, 48, 48, &tris);
+        let elapsed = t0.elapsed();
+        assert!(
+            elapsed.as_secs_f64() < 2.0,
+            "200k-triangle plane took {:.3}s (budget 2s)",
+            elapsed.as_secs_f64()
+        );
+        assert_eq!(res.skipped_triangles, 0, "plane slivers must not trip the cap");
+        assert!(res.solid_count > 0, "plane must leave a shell");
     }
 }

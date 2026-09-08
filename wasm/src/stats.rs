@@ -484,8 +484,8 @@ mod tests {
         let tiny_outside: Vec<f32> = vec![
             -10.0, -10.0, -10.0, -9.99, -10.0, -10.0, -10.0, -9.99, -10.0,
         ];
-        let solids = set_mesh(&tiny_outside);
-        assert_eq!(solids, 0, "footprintless mesh must voxelize to 0 solids");
+        let res = set_mesh(&tiny_outside);
+        assert_eq!(res.solid_count, 0, "footprintless mesh must voxelize to 0 solids");
         // 5 × 64 = 320 steps past the 200-step sentinel horizon.
         for _ in 0..5 {
             step(64);

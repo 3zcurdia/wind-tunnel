@@ -1,6 +1,16 @@
 import { BufferAttribute, BufferGeometry, type Mesh } from "three";
+import { AppError } from "../sim/errors";
 import { ModelParseError } from "../sim/types";
 import type { LoadedFile } from "../sim/types";
+
+/**
+ * F022 hostility-matrix gate: a compressible text file can pass F004's 50 MB
+ * size check while holding far more triangles than the pipeline can chew.
+ * Rejected here — after parsing (so counts are exact) but before any
+ * normalization/voxelization work — with an `AppError` carrying the exact
+ * spec message (≤ 90 chars).
+ */
+export const MAX_MODEL_TRIANGLES = 1500000;
 
 export interface ParsedModel {
   geometry: BufferGeometry;
@@ -30,13 +40,45 @@ function isMeshObject(obj: unknown): obj is Mesh {
 /**
  * Parse an uploaded OBJ/PLY file into a single BufferGeometry (F005).
  * OBJ groups with multiple child meshes are merged into one body.
- * Rejects with ModelParseError on garbage input.
+ * Rejects with ModelParseError on garbage input, or with an AppError of
+ * kind `model-too-large` when the triangle count exceeds MAX_MODEL_TRIANGLES
+ * (F022 — widened rejection union; existing ModelParseError paths unchanged).
  */
 export async function parseModel(file: LoadedFile): Promise<ParsedModel> {
-  if (file.format === "obj") {
-    return parseObj(file);
+  const parsed = file.format === "obj" ? await parseObj(file) : await parsePly(file);
+  assertTriangleBudget(parsed.triangles);
+  assertFinitePositions(parsed.geometry);
+  return parsed;
+}
+
+/** F022 §2: huge-but-compressible files are rejected before normalize work. */
+function assertTriangleBudget(triangles: number): void {
+  if (triangles > MAX_MODEL_TRIANGLES) {
+    throw new AppError(
+      "model-too-large",
+      "Model too complex (max 1.5M triangles)",
+    );
   }
-  return parsePly(file);
+}
+
+/**
+ * F022 §2: three.js loaders may pass NaN/Inf coordinates through. A
+ * non-finite position poisons bbox math downstream, so fail fast here with
+ * the degenerate-model kind (normalize holds the same guard for geometries
+ * built outside this parser).
+ */
+function assertFinitePositions(geometry: BufferGeometry): void {
+  const position = geometry.getAttribute("position");
+  const array = position?.array as ArrayLike<number> | undefined;
+  if (!position || !array) return;
+  for (let i = 0; i < array.length; i += 1) {
+    if (!Number.isFinite(array[i])) {
+      throw new AppError(
+        "degenerate-model",
+        "Model has invalid coordinates — cannot simulate",
+      );
+    }
+  }
 }
 
 function parseError(file: LoadedFile, detail: unknown): ModelParseError {

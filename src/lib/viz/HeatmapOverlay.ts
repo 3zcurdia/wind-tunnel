@@ -244,10 +244,12 @@ export class HeatmapOverlay {
   update(
     pressure: Float32Array,
     anchors: PressureHeatmapAnchors,
+    stable = true,
   ): void {
     const attr = this.colorAttr;
     const map = this.indexMap;
-    if (!attr || !map || !this.geometry) return;
+    // F022 §3: frozen while unstable — the last frame persists on screen.
+    if (!attr || !map || !this.geometry || !stable) return;
     this.frames += 1;
     if (this.frames % 3 !== 1) return;
     const colors = attr.array as Float32Array;

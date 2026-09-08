@@ -5,6 +5,7 @@ import {
   DOMAIN_LENGTH_M,
   type FlowConditions,
 } from "@/lib/sim/conditions";
+import { AppError } from "@/lib/sim/errors";
 import {
   QUALITY_PRESETS,
   type GridDims,
@@ -41,6 +42,13 @@ interface LatticeParamsHandle {
   free(): void;
 }
 
+/** Structural view of the wasm-bindgen `SetMeshResult` return (F022). */
+interface SetMeshResultHandle {
+  readonly solidCount: number;
+  readonly skippedTriangles: number;
+  free(): void;
+}
+
 /** Structural view of the wasm-bindgen `PressureAnchors` return (F012). */
 interface PressureAnchorsHandle {
   readonly p_min_pa: number;
@@ -71,10 +79,11 @@ interface StatsRecordHandle {
 
 /**
  * Full ABI surface used by the engine. `wasm.ts` intentionally stays at its
- * narrow loader type; the structural extension lives here so no `wasm.ts`
- * edit is needed for this feature.
+ * narrow loader type (F022 leaves its stale `set_mesh(): number` typing
+ * untouched per the file-list discipline — see DECISIONS.md §F022.3); the
+ * structural extension lives here so no `wasm.ts` edit is needed.
  */
-type FullWasmApi = WasmApi & {
+type FullWasmApi = Omit<WasmApi, "set_mesh"> & {
   set_conditions(
     uMps: number,
     pressureKpa: number,
@@ -86,7 +95,7 @@ type FullWasmApi = WasmApi & {
   step(n: number): void;
   is_stable(): boolean;
   timing(): TimingHandle;
-  set_mesh(triangles: Float32Array): number;
+  set_mesh(triangles: Float32Array): SetMeshResultHandle;
   clear_mesh(): void;
   particles_ptr(): number;
   speeds_ptr(): number;
@@ -148,6 +157,16 @@ const ADVECT_DT_LATTICE = 1.0;
 /** Instability auto-recovery throttle (F019 contract: 1 per 5 s). */
 const RECOVERY_THROTTLE_MS = 5000;
 
+/**
+ * Double-blowup latch window (F022 §3): two instability recoveries within
+ * 30 s stop auto-recovery and raise the persistent banner instead.
+ */
+const BLOWUP_WINDOW_MS = 30000;
+
+/** Persistent banner text for the double-blowup latch (F022 §3, ≤ 90 chars). */
+export const UNSTABLE_LOCK_MESSAGE =
+  "Simulation unstable — reduce wind speed or change model";
+
 /** EMA weight for the loop-driven FPS counter (F017 §2). */
 const FPS_EMA_ALPHA = 0.1;
 /** Longer frame gaps are discarded (background-tab return drags the EMA). */
@@ -157,6 +176,8 @@ const FPS_SAMPLE_MAX_MS = 500;
 export interface MeshResult {
   readonly solidCount: number;
   readonly surfaceMode: boolean;
+  /** Triangles skipped by the F022 pathological swept-range cap. */
+  readonly skippedTriangles: number;
 }
 
 /** What the engine reported for the last committed operating point. */
@@ -176,6 +197,8 @@ export interface TickResult {
   readonly activeParticles: number;
   /** Latched stability flag after this frame's work. */
   readonly stable: boolean;
+  /** F022 double-blowup latch: auto-recovery stopped, banner owns Reset. */
+  readonly unstableLocked: boolean;
 }
 
 /** Rake line snapshot in the exact shape `SmokeTracers.setRake` takes. */
@@ -223,7 +246,10 @@ export function nextStepsPerFrame(
 function triangleSoup(geometry: BufferGeometry): Float32Array {
   const position = geometry.getAttribute("position");
   if (!position) {
-    throw new Error("Cannot voxelize geometry without a position attribute");
+    throw new AppError(
+      "voxelize-failed",
+      "Model has no position data — cannot voxelize",
+    );
   }
   const array = position.array as ArrayLike<number>;
   const index = geometry.getIndex();
@@ -301,10 +327,18 @@ export class SimEngine {
   };
   private solidCount = 0;
   private surfaceMode = false;
+  /** Skipped-triangle count from the last `setMesh` (F022 secondary channel). */
+  private skippedTriangles = 0;
   /** Mean ms per lattice step (EMA from wasm `timing()`); feeds `tick`. */
   private avgStepMs = 0;
   /** Last auto-recovery timestamp; starts armed so the first recovery runs. */
   private lastRecoveryMs = -RECOVERY_THROTTLE_MS;
+  /** Instability timestamps inside the F022 double-blowup window. */
+  private recoveryTimes: number[] = [];
+  /** F022 latch: two blowups within 30 s stopped auto-recovery. */
+  private unstableLocked = false;
+  /** Last stable readout snapshot for the F022 stats-freeze path. */
+  private lastGoodReadout: SimReadout | null = null;
   private fpsEma = 0;
   private lastTickMs = 0;
   private lastSteps: number | null = null;
@@ -381,7 +415,10 @@ export class SimEngine {
   private requireApi(): FullWasmApi {
     const api = this.api;
     if (!api) {
-      throw new Error("SimEngine used before init() completed");
+      throw new AppError(
+        "unknown",
+        "Simulation engine not ready — retry shortly",
+      );
     }
     return api;
   }
@@ -400,7 +437,8 @@ export class SimEngine {
 
   /**
    * Voxelize a domain-space (lattice cells) geometry: builds the triangle
-   * f32 array, calls `set_mesh`, stores the solid count + surface flag.
+   * f32 array, calls `set_mesh`, stores the solid count + surface flag +
+   * skipped-triangle count (F022 secondary channel).
    * Caches a copy of the soup with the current dims (F021) so a later
    * quality switch can re-voxelize without the original file bytes.
    * Pointer-affecting call — callers must re-fetch views afterwards (all
@@ -409,13 +447,28 @@ export class SimEngine {
   setMesh(geometry: BufferGeometry): MeshResult {
     const api = this.requireApi();
     const soup = triangleSoup(geometry);
-    const solidCount = api.set_mesh(soup);
-    const surfaceMode = api.surface_mode_flag();
-    this.solidCount = solidCount;
-    this.surfaceMode = surfaceMode;
-    this.cachedMesh = { soup: soup.slice(), dims: { ...this.dims } };
-    return { solidCount, surfaceMode };
-    return { solidCount, surfaceMode };
+    let result: SetMeshResultHandle;
+    try {
+      result = api.set_mesh(soup);
+    } catch (err) {
+      throw new AppError(
+        "voxelize-failed",
+        "Voxelization failed — try a simpler model",
+        { cause: err },
+      );
+    }
+    try {
+      const solidCount = Math.max(0, Math.floor(result.solidCount));
+      const skippedTriangles = Math.max(0, Math.floor(result.skippedTriangles));
+      const surfaceMode = api.surface_mode_flag();
+      this.solidCount = solidCount;
+      this.surfaceMode = surfaceMode;
+      this.skippedTriangles = skippedTriangles;
+      this.cachedMesh = { soup: soup.slice(), dims: { ...this.dims } };
+      return { solidCount, surfaceMode, skippedTriangles };
+    } finally {
+      result.free();
+    }
   }
 
   /** Remove the current mesh; the grid returns to all-fluid. */
@@ -424,6 +477,7 @@ export class SimEngine {
     api.clear_mesh();
     this.solidCount = 0;
     this.surfaceMode = false;
+    this.skippedTriangles = 0;
     this.cachedMesh = null;
   }
 
@@ -435,6 +489,11 @@ export class SimEngine {
   /** True when the last `setMesh` fell back to shell-only mode (F006). */
   getSurfaceMode(): boolean {
     return this.surfaceMode;
+  }
+
+  /** Skipped-triangle count from the last `setMesh` (0 with no mesh). */
+  getSkippedTriangles(): number {
+    return this.skippedTriangles;
   }
 
   /**
@@ -606,11 +665,18 @@ export class SimEngine {
     const cached = this.cachedMesh;
     if (cached && cached.soup.length > 0) {
       const rescaled = rescaleTriangleSoup(cached.soup, prevDims, nextDims);
-      this.solidCount = api.set_mesh(rescaled);
+      const res = api.set_mesh(rescaled);
+      try {
+        this.solidCount = Math.max(0, Math.floor(res.solidCount));
+        this.skippedTriangles = Math.max(0, Math.floor(res.skippedTriangles));
+      } finally {
+        res.free();
+      }
       this.surfaceMode = api.surface_mode_flag();
     } else {
       this.solidCount = 0;
       this.surfaceMode = false;
+      this.skippedTriangles = 0;
     }
     api.reset_flow();
     this.particleTarget = spec.particles;
@@ -664,6 +730,8 @@ export class SimEngine {
    * 2. While running and stable: `advect_particles(1.0)` + top-up respawn
    *    (≤ 2 000/frame once below 98 % of target).
    * 3. While paused: stepping halts and buffers stay on screen untouched.
+   * 4. F022 §3: while `unstableLocked`, instability no longer auto-recovers
+   *    — the frame stays paused and frozen until `resetUnstable()`.
    */
   tick(budgetMs: number): TickResult {
     const api = this.requireApi();
@@ -697,7 +765,13 @@ export class SimEngine {
         timing.free();
       }
       if (!api.is_stable()) {
-        recovered = this.recover(nowMs);
+        if (this.unstableLocked) {
+          // Latched (F022 §3): stay paused and frozen — Reset owns recovery.
+          this.pause();
+          recovered = false;
+        } else {
+          recovered = this.recover(nowMs);
+        }
       } else {
         api.advect_particles(ADVECT_DT_LATTICE);
         const active = api.active_particle_count();
@@ -709,13 +783,31 @@ export class SimEngine {
       }
     }
 
-    const stable = api.is_stable();
+    const stable = api.is_stable() && !this.unstableLocked;
     return {
       stepsRun,
       recovered,
       activeParticles: api.active_particle_count(),
       stable,
+      unstableLocked: this.unstableLocked,
     };
+  }
+
+  /** True once two blowups within 30 s stopped auto-recovery (F022 §3). */
+  isUnstableLocked(): boolean {
+    return this.unstableLocked;
+  }
+
+  /**
+   * Clear the double-blowup latch (the banner Reset button): drop the
+   * recovery window, re-initialize to a clean uniform flow, and resume.
+   * Recovers fully — the next instability starts a fresh window.
+   */
+  resetUnstable(): void {
+    this.unstableLocked = false;
+    this.recoveryTimes = [];
+    this.requireApi().reset_flow();
+    this.play();
   }
 
   /**
@@ -723,10 +815,24 @@ export class SimEngine {
    * Returns true when a full (halving) recovery ran; the 5 s throttle gates
    * the halving (spamming conditions can't loop-crash), but pause + reset
    * always run so the latch clears and the badge can return to STABLE.
+   *
+   * F022 §3: recoveries inside a 30 s window are counted — the second one
+   * (a blowup at already-reduced speed, beyond auto-recovery) latches
+   * `unstableLocked` instead and returns false, so the loop's recovery toast
+   * stays silent and the persistent banner owns the message.
    */
   private recover(nowMs: number): boolean {
     const api = this.requireApi();
     this.pause();
+    this.recoveryTimes = [
+      ...this.recoveryTimes.filter((t) => nowMs - t < BLOWUP_WINDOW_MS),
+      nowMs,
+    ];
+    if (this.recoveryTimes.length >= 2) {
+      this.unstableLocked = true;
+      api.reset_flow();
+      return false;
+    }
     const full = nowMs - this.lastRecoveryMs >= RECOVERY_THROTTLE_MS;
     if (full) {
       this.lastRecoveryMs = nowMs;
@@ -807,6 +913,12 @@ export class SimEngine {
    * null so the 4 Hz poll loop survives a poisoned instance). `modelName` /
    * `modelTriangles` are always null here (React-free module — the provider
    * fills them from `ModelContext`, same split as the deleted bridge).
+   *
+   * F022 §3: while unstable (or double-blowup latched), stats freeze — the
+   * last stable developed snapshot is returned with `stable: false`, so the
+   * panel keeps showing last-good numbers plus the UNSTABLE badge instead of
+   * NaN or diverged garbage. All numeric paths below are finite-guarded, so
+   * no NaN ever reaches the UI even with no snapshot cached yet.
    */
   getReadout(): SimReadout | null {
     const api = this.api;
@@ -833,7 +945,15 @@ export class SimEngine {
         // "—" (same for the drag force, which shares the EMA).
         const meaningful =
           Number.isFinite(record.cd) && record.cd !== -1;
-        return {
+        const liveStable = record.stable && !this.unstableLocked;
+        if (!liveStable && this.lastGoodReadout !== null) {
+          return {
+            ...this.lastGoodReadout,
+            fps: this.fpsEma,
+            stable: false,
+          };
+        }
+        const readout: SimReadout = {
           fps: this.fpsEma,
           stepsPerSecond,
           cd: meaningful ? record.cd : null,
@@ -847,10 +967,17 @@ export class SimEngine {
           re: Number.isFinite(record.re) ? record.re : 0,
           gridDims: [this.dims.nx, this.dims.ny, this.dims.nz],
           activeParticles: record.active_particles,
-          stable: record.stable,
+          stable: liveStable,
           modelName: null,
           modelTriangles: null,
         };
+        // Cache developed stable snapshots only (mesh + past the sentinel
+        // horizon) so the freeze path restores last-good numbers, not a
+        // just-reset uniform field.
+        if (liveStable && meaningful) {
+          this.lastGoodReadout = readout;
+        }
+        return readout;
       } finally {
         record.free();
       }

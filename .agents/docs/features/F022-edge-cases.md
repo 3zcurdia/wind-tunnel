@@ -9,7 +9,7 @@
 | Size | M |
 | Skill fit | `logic` |
 | Depends on | F004–F019 (audits their paths); no new features |
-| Status | `[ ]` todo |
+| Status | `[x]` done (2026-09-08; code + headless verification done, 5 manual/browser criteria need a browser — see notes) |
 
 ## Goal
 
@@ -108,18 +108,50 @@ src/app/page.tsx                          (modify) — boundary + overlay wiring
 
 - [ ] Each matrix row (§2) demonstrated with its crafted file → correct friendly
       message, app usable afterwards (can upload a good model without reload).
-- [ ] Plane mesh (200k tris) voxelizes < 2 s; skipped-count reported if cap hits.
+      **LOGIC VERIFIED, file-picker uploads need a browser:** triangle gate
+      (1.5 M, exact message), NaN/Inf → `degenerate-model`, single-triangle
+      normalizes to exactly 32 cells, garbage → `parse` with the pipeline
+      usable right after, Rust swept-cap skips + counts without hanging
+      (`/tmp/f022-probe4.mjs`, `cargo test` cap test). Real drag & drop of
+      crafted hostile files needs a browser.
+- [x] Plane mesh (200k tris) voxelizes < 2 s; skipped-count reported if cap hits.
+      (Verified 2026-09-08: Rust `plane_mesh_200k_triangles_completes_under_2s`
+      passes in ~0.01 s release; `set_mesh` returns `{ solidCount,
+      skippedTriangles }` through the real artifact + `SimEngine.setMesh` —
+      probes 1–2.)
 - [ ] Double-blowup scenario → persistent banner, app frozen-but-alive, Reset
       recovers fully.
+      **ENGINE VERIFIED, banner clicks need a browser:** forced double-blowup
+      on the real engine latches (`unstableLocked`, `recovered: false` on the
+      locking frame), the readout freezes to last-good developed values
+      bit-for-bit with `stable: false` and zero non-finite fields, and
+      `resetUnstable()` clears + resumes (probes 2/2b). Banner DOM + Reset
+      click need a browser.
 - [ ] Kill the GPU context via devtools ("Emulate WebGL context loss") → overlay
       or auto-restore per §4; no permanent breakage.
+      **NOT VERIFIABLE HEADLESS — needs a browser** (plumbing is wired per
+      spec: canvas listeners, loop pause/resume, resource re-upload,
+      `onContextLost`/`onContextRestored` lists, overlay + Reload fallback).
 - [ ] Block the wasm artifact (rename file) → boot panel with Retry; restoring
       the file + Retry works without full reload.
+      **NOT VERIFIABLE HEADLESS — needs a browser** (panel + key-remount
+      retry ships in the prerendered output; the failure must be induced by
+      renaming the served artifact).
 - [ ] `rg "throw new Error\(" src --glob '!**/errors.ts'` → only
       `AppError`-derived throws remain.
-- [ ] Timer-hygiene checklist present in `DECISIONS.md` with no missing cleanup.
-- [ ] `npm run lint` / `npm run build` pass; `cargo test` passes (new guards
+      **DEVIATION DOCUMENTED, criterion unticked:** two hits remain, both
+      React context-misuse guards outside this feature's file list
+      (`SimulationContext.tsx:617`, `ModelContext.tsx:131`) — see
+      DECISIONS.md §F022.2. Every user-facing throw site is `AppError`.
+- [x] Timer-hygiene checklist present in `DECISIONS.md` with no missing cleanup.
+      (DECISIONS.md §F022.7 — every `setInterval`/`addEventListener`/rAF in
+      F014–F019 paths plus the three new F022 subscriptions, each with its
+      cleanup site.)
+- [x] `npm run lint` / `npm run build` pass; `cargo test` passes (new guards
       tested in Rust: malformed lengths, skipped-triangle counter).
+      (Verified 2026-09-08: lint zero errors/warnings, build succeeds,
+      `cargo test --release` 65 passed / 0 failed, `npm run wasm:build`
+      regenerates working bindings.)
 
 ## Test plan
 

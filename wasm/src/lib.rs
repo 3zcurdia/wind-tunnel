@@ -226,22 +226,54 @@ pub fn init_sim(nx: u32, ny: u32, nz: u32, particle_capacity: u32) {
 }
 
 /// Voxelize a mesh. Triangles are 9 floats each, in DOMAIN space.
-/// Returns the number of solid cells. Replaces any previous mesh.
-/// Malformed input (empty, or length % 9 != 0) returns 0 and leaves the
-/// previous state untouched — no panics.
+/// Returns the solid cell count plus the F022 pathological-cap skip count.
+/// Replaces any previous mesh.
+/// Malformed input (empty, or length % 9 != 0) returns a zeroed result and
+/// leaves the previous state untouched — no panics.
 ///
 /// F007: newly-solid cells are frozen to rest equilibrium (and newly-fluid
 /// cells back to inlet equilibrium) so a fresh obstacle immediately disturbs
 /// the flow; the rest of the field is left untouched (no full reset).
+///
+/// F022: the return changed from a bare `u32` solid count to
+/// [`SetMeshResult`] (`{ solidCount, skippedTriangles }` in JS — the
+/// secondary channel reporting how many triangles tripped the pathological
+/// swept-range cap). ARCHITECTURE.md §5 updated in the same commit.
 #[wasm_bindgen]
-pub fn set_mesh(triangles: &[f32]) -> u32 {
+pub struct SetMeshResult {
+    pub(crate) solid_count: u32,
+    pub(crate) skipped_triangles: u32,
+}
+
+#[wasm_bindgen]
+impl SetMeshResult {
+    /// Number of solid cells (surface + interior, or shell-only in fallback).
+    #[allow(non_snake_case)]
+    #[wasm_bindgen(getter)]
+    pub fn solidCount(&self) -> u32 {
+        self.solid_count
+    }
+    /// Triangles skipped by the pathological swept-range cap (F022 §2).
+    #[allow(non_snake_case)]
+    #[wasm_bindgen(getter)]
+    pub fn skippedTriangles(&self) -> u32 {
+        self.skipped_triangles
+    }
+}
+
+#[wasm_bindgen]
+pub fn set_mesh(triangles: &[f32]) -> SetMeshResult {
+    let zeroed = || SetMeshResult {
+        solid_count: 0,
+        skipped_triangles: 0,
+    };
     if triangles.is_empty() || triangles.len() % 9 != 0 {
-        return 0;
+        return zeroed();
     }
     STATE.with(|s| {
         let mut state = s.borrow_mut();
         if state.nx == 0 || state.ny == 0 || state.nz == 0 || state.occupancy.is_empty() {
-            return 0;
+            return zeroed();
         }
         let old = state.occupancy.clone();
         let res = voxel::voxelize(state.nx, state.ny, state.nz, triangles);
@@ -275,7 +307,10 @@ pub fn set_mesh(triangles: &[f32]) -> u32 {
         // F013: silhouette + drag-average restart for the new geometry.
         stats::on_new_mesh(&mut state);
         lbm::retune_solid_cells(&mut state, &to_fluid);
-        state.solid_count as u32
+        SetMeshResult {
+            solid_count: state.solid_count as u32,
+            skipped_triangles: res.skipped_triangles as u32,
+        }
     })
 }
 
@@ -941,21 +976,46 @@ mod tests {
     }
 
     /// `set_mesh` rejects malformed input without panicking and the state
-    /// stays usable for subsequent calls.
+    /// stays usable for subsequent calls. F022: malformed input yields a
+    /// zeroed [`SetMeshResult`] (both channels zero).
     #[test]
     fn malformed_set_mesh_keeps_valid_state() {
         init_sim(16, 16, 16, 100);
-        assert_eq!(set_mesh(&[]), 0);
-        assert_eq!(set_mesh(&[1.0, 2.0, 3.0, 4.0]), 0);
+        let empty = set_mesh(&[]);
+        assert_eq!(empty.solid_count, 0);
+        assert_eq!(empty.skipped_triangles, 0);
+        let bad_len = set_mesh(&[1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(bad_len.solid_count, 0);
+        assert_eq!(bad_len.skipped_triangles, 0);
         assert_eq!(occupancy_len(), 16 * 16 * 16);
         assert!(!surface_mode_flag());
         // A subsequent valid call still works (single triangle → shell mode).
         let tri: Vec<f32> = vec![1.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 2.0, 1.0];
-        assert!(set_mesh(&tri) > 0);
+        let ok = set_mesh(&tri);
+        assert!(ok.solid_count > 0);
+        assert_eq!(ok.skipped_triangles, 0);
         assert!(surface_mode_flag());
         clear_mesh();
         assert_eq!(occupancy_len(), 16 * 16 * 16);
         assert!(STATE.with(|s| s.borrow().occupancy.iter().all(|&c| c == 0)));
+    }
+
+    /// F022: an over-swept triangle through the ABI is skipped, counted in
+    /// the `skippedTriangles` channel, and never poisons the grid — while a
+    /// valid triangle in the same call still voxelizes.
+    #[test]
+    fn set_mesh_reports_skipped_triangles() {
+        init_sim(16, 16, 16, 0);
+        let mut tris: Vec<f32> = vec![1.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 2.0, 1.0];
+        tris.extend_from_slice(&[
+            -1.0e6, -1.0e6, -1.0e6, 1.0e6, -1.0e6, -1.0e6, -1.0e6, 1.0e6, 1.0e6,
+        ]);
+        let res = set_mesh(&tris);
+        assert_eq!(res.skipped_triangles, 1);
+        assert!(res.solid_count > 0, "valid triangle must still voxelize");
+        // JS-facing getters agree with the fields.
+        assert_eq!(res.solidCount(), res.solid_count);
+        assert_eq!(res.skippedTriangles(), res.skipped_triangles);
     }
 
     // ── F010: step driver, stability & timing ────────────────────────────

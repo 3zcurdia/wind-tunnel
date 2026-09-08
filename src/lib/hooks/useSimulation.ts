@@ -195,6 +195,9 @@ export function useSimulation(): void {
             return;
           }
           // Particles: mirror the active pool prefix into GPU attributes.
+          // F022: the stability flag freezes viz on diverged frames (the
+          // paused early-return below already skips viz while paused; the
+          // flag is defense-in-depth for the detecting frame itself).
           const views = engine.getParticleViews();
           vizParticles.update(
             views.positions,
@@ -202,6 +205,7 @@ export function useSimulation(): void {
             views.active,
             "speed",
             engine.getSpeedNorm(),
+            result.stable,
           );
           // Heatmap: reconcile with the live model, then paint (the overlay
           // throttles color fills to every 3rd call itself).
@@ -222,7 +226,7 @@ export function useSimulation(): void {
               engine.getSolidCount() > 0
                 ? engine.getPressureView()
                 : EMPTY_PRESSURE;
-            vizOverlay.update(pressure, engine.getAnchors());
+            vizOverlay.update(pressure, engine.getAnchors(), result.stable);
           }
           // Smoke: read-only sampling after this frame's `step` (never
           // steps itself — the tick above owns stepping).
@@ -241,9 +245,13 @@ export function useSimulation(): void {
             );
             wasSmokeEnabled = true;
           }
-          vizTracers.update(SMOKE_DT_LATTICE, (points, out) => {
-            engine.sampleVelocity(points, out);
-          });
+          vizTracers.update(
+            SMOKE_DT_LATTICE,
+            (points, out) => {
+              engine.sampleVelocity(points, out);
+            },
+            result.stable,
+          );
         } catch {
           // A poisoned instance must not kill the render loop: skip the
           // frame on last buffers. (Unreachable by the Rust no-panic

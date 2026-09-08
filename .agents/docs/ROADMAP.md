@@ -69,7 +69,7 @@ F003 and can proceed while Phase 1 UI work happens.
 ### Phase 6 — Hardening
 
 - [x] [F021 — Quality presets (low/medium/high)](features/F021-quality-presets.md) — `S` `logic` (2026-09-08; code + headless verification done, 4 visual/browser criteria need a browser — see spec notes)
-- [ ] [F022 — Edge cases & error handling](features/F022-edge-cases.md) — `M` `logic`
+- [x] [F022 — Edge cases & error handling](features/F022-edge-cases.md) — `M` `logic` (2026-09-08; code + headless verification done, 5 manual/browser criteria need a browser — see spec notes)
 - [ ] [F023 — Built-in sample models + README](features/F023-samples-readme.md) — `S` `docs`
 
 ---

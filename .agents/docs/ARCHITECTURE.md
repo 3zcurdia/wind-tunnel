@@ -170,8 +170,13 @@ set_conditions(u_mps: f64, pressure_kpa: f64, viscosity_pas: f64,
                domain_length_m: f64, char_length_m: f64) -> LatticeParams
 
 /// Voxelize a mesh. Triangles are 9 floats each, in DOMAIN space.
-/// Returns number of solid cells. Replaces any previous mesh.
-set_mesh(triangles: &[f32]) -> u32
+/// Returns the solid cell count plus the F022 pathological-cap skip count.
+/// Replaces any previous mesh.
+set_mesh(triangles: &[f32]) -> SetMeshResult
+// SetMeshResult { solidCount: u32, skippedTriangles: u32 }
+//             (skippedTriangles: triangles whose unclamped swept range
+//             exceeded 2× the grid volume — skipped, counted, reported;
+//             F022; free the result after reading in JS)
 clear_mesh()
 
 /// Re-initialize the flow field to uniform inlet conditions (keeps the mesh).

@@ -114,8 +114,10 @@ export class ParticleSystem {
     active: number,
     colorMode: ParticleColorMode,
     speedNorm: { min: number; max: number },
+    stable = true,
   ): void {
-    if (this.disposed) return;
+    // F022 §3: frozen while unstable — the last frame persists on screen.
+    if (this.disposed || !stable) return;
     const count = Math.max(
       0,
       Math.min(active, this.capacity, Math.floor(positions.length / 3), speeds.length),

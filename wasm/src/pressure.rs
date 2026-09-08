@@ -714,8 +714,8 @@ mod tests {
                 }
             }
         }
-        let solids = set_mesh(&tris);
-        assert!(solids > 0, "box mesh must voxelize to non-empty solid");
+        let res = set_mesh(&tris);
+        assert!(res.solid_count > 0, "box mesh must voxelize to non-empty solid");
         let len = vertex_pressure_len();
         assert!(len == 8, "box has 8 deduped vertices, got len {len}");
         step(10);

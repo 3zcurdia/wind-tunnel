@@ -896,3 +896,106 @@ Observed values: per-tier placement exact (Low center (22.4, 12, 12) size
 16; Medium (33.6, 18, 18) size 24; High (44.8, 24, 24) size 32);
 conditions re-commit across an `init_sim` rebuild is bit-identical
 (u_lattice, τ); `spawn` + 2 steps post-switch stay `stable == true`.
+
+---
+
+## 2026-09-08 — F022 (edge cases & error handling)
+
+Headless probes drive the real `--target web` artifact via `initSync`
+(F014/F019 pattern) plus the real `SimEngine.ts` through an `@/`-alias
+resolve hook (F019 pattern), Node 26.8.1, Apple M4 Pro:
+`/tmp/f022-probe1.mjs` 6/6 (`node --test`: taxonomy + struct channel),
+`/tmp/f022-probe2.mjs` (setMesh surfacing + forced double-blowup latch +
+frozen readout + Reset), `/tmp/f022-probe2b.mjs` (freeze-cache exactness),
+`/tmp/f022-probe3.mjs` (all three viz guards); `cargo test --release`
+65 passed / 0 failed; `npm run wasm:build` regenerates cleanly;
+`npm run lint` zero errors/warnings; `npm run build` succeeds.
+
+1. **F005 rejection union widened (additive, contract preserved).**
+   `parseModel` still rejects with `ModelParseError` on garbage input and
+   `normalizeToDomain` still throws `DegenerateModelError` on zero-size
+   boxes (F005 contract intact); the three NEW F022 guards throw `AppError`
+   directly (`model-too-large` for > 1.5 M triangles with the exact spec
+   message, `degenerate-model` for non-finite positions/bbox and for the
+   sub-cell "too small relative to tunnel" case). Callers handle all three
+   uniformly through `toAppError()` at the display boundary.
+2. **`rg "throw new Error\("` criterion vs file-list discipline.**
+   All bare throws inside F022's file list are now `AppError`
+   (`SimEngine` ×2, `SceneManager` getLayer). Two hits remain, both React
+   context-misuse guards outside the file list —
+   `SimulationContext.tsx:617` (`useSimulationContext` outside provider),
+   `ModelContext.tsx:131` (`useModel` outside provider) — which are
+   programming errors, never user-facing, and editing them would violate
+   CONVENTIONS.md file-list discipline. Criterion otherwise met: every
+   user-facing throw site maps onto `AppError`, and every spec userMessage
+   is ≤ 90 chars (pinned by probe 1).
+3. **`wasm.ts` grew a `SetMeshResult` type (F006.2 precedent).** F022's file
+   list omits `wasm.ts`, but the sanctioned `set_mesh → struct` ABI change
+   makes the loader's hand-written `set_mesh(): number` typing a hard build
+   error once `wasm-pack` regenerates the bindings (the generated
+   `windtunnel.d.ts` returns `SetMeshResult`). Smallest consistent change:
+   the return type becomes the structural `SetMeshResult`
+   (`{ solidCount, skippedTriangles }` + `free()`), same "grown per
+   feature" pattern F006 established; `SimEngine` keeps its local
+   structural handle (F019.3 pattern) via `Omit<WasmApi, "set_mesh">`.
+4. **Two one-line test knock-ons outside the file list.** The ABI return
+   change breaks compilation of `pressure.rs:717`
+   (`abi_wiring_small_box`) and `stats.rs:487` (`degenerate_mesh_cd_zero`);
+   both assert lines now read `.solid_count` (F019.2 precedent — the build
+   cannot pass otherwise). No algorithm code touched in either file.
+5. **Stable-flag threading touches `useSimulation.ts` (3 lines).** The viz
+   `update()` guards take an optional `stable = true` (backwards
+   compatible — old callers compile unchanged), but the contract only
+   functions if the driver passes `tick()`'s `stable`. The loop now passes
+   `result.stable` into all three updates (F019.2 precedent). Freeze
+   already held through the engine pause (the loop returns before viz
+   updates while paused); the flag is defense-in-depth for the detecting
+   frame itself, verified in probe 3.
+6. **Double-blowup semantics: the locking recovery halves first.**
+   The second blowup runs the normal halve + commit + `reset_flow` and
+   THEN latches (the banner message describes the already-reduced speed),
+   returning `recovered: false` so the loop's halving toast stays silent
+   and the persistent banner owns the message. `getReadout()` reports
+   `stable: false` while latched and serves the last developed snapshot
+   (cached only past the F013 sentinel, so the freeze restores real
+   numbers, not a just-reset uniform field).
+7. **Timer-hygiene audit (§7 checklist — no code churn, all cleanups
+   verified present):**
+   - `src/app/page.tsx:75` UnstableBanner 500 ms poll → cleared `:86`;
+     `:127` ContextLostOverlay 500 ms poll + manager subscriptions →
+     cleared + unsubscribed `:139`.
+   - `src/components/viewport/SceneManager.ts:220` OrbitControls `start`
+     → removed `:403`; `:250` ResizeObserver → disconnected `:402`;
+     `:255` canvas contextlost/restored → removed `:388`/`:392`;
+     `:275`/`:277` rAF → cancelled `:282` via `stop()` (dispose calls it).
+   - `src/lib/hooks/useSimulation.ts:57` SceneManager-wait poll →
+     cleared `:59`/`:65`; `onFrame` subscription + viz disposal in the
+     effect cleanup.
+   - `src/lib/sim/SimulationContext.tsx:232` toast dismiss timeout →
+     self-deletes from the set + unmount sweep `:243`; `:336` conditions
+     debounce → cleared `:334`/`:352`/`:417`/`:517`; `:375` 4 Hz readout
+     poll → cleared `:387`.
+   - `src/components/viewport/ViewToolbar.tsx:38` fullscreenchange →
+     removed `:40`.
+   - `src/components/controls/ControlPanel.tsx:360` Space-toggle keydown
+     → removed `:362`.
+   - `src/components/viewport/Viewport.tsx` async mount: `disposed` flag
+     + manager stop/dispose in cleanup (no timers/listeners of its own).
+8. **StrictMode stress (note only, per spec).** Double-mount survival was
+   verified in F019 (idempotent `SimEngine.init`, provider/loop/viewport
+   cleanups above); F022 adds no new mount-time singletons — the two new
+   page polls and the SceneManager canvas listeners all clean up in their
+   effect/dispose paths (item 7), so a second mount re-subscribes cleanly.
+   Manual browser double-check outstanding (React dev overlay in `npm run
+   dev` mounts `page.tsx` twice).
+
+Observed values: 200k-triangle plane voxelizes in ~0.01 s release
+(~0.1 s debug; budget 2 s — 200× headroom); pathological sweep cap trips
+exactly (2/2 synthetic over-swept triangles, valid triangle still
+voxelizes to 125 solids on 16³); low-grid 8³ box at pinned (0.15, 0.505)
+diverges ≈ 80 steps → first recovery halves 60 → 30 m/s; re-pinned second
+run locks (`unstableLocked: true`, `recovered: false`); developed low-grid
+run (320 steps, steady (0.08, 0.56)) caches cd = 9.10465722714673
+(coarse-grid 33 %-blockage number, not a physics claim) and the frozen
+readout reproduces it bit-for-bit with `stable: false`, zero non-finite
+fields.
