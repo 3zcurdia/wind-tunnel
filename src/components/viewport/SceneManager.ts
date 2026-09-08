@@ -22,6 +22,7 @@ import {
   WebGLRenderer,
 } from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import type { GridDims } from "@/lib/sim/quality";
 import { DOMAIN } from "@/lib/sim/types";
 import { VoxelDebugView } from "./VoxelDebugView";
 
@@ -69,15 +70,37 @@ interface CameraTween {
   readonly to: Spherical;
 }
 
-const DOMAIN_SIZE = { x: 12.8, y: 4.8, z: 4.8 } as const;
+/** World-space size of the domain box for the given grid (0.1/cell). */
+function domainWorldSize(dims: GridDims): { x: number; y: number; z: number } {
+  return {
+    x: dims.nx * LATTICE_TO_WORLD,
+    y: dims.ny * LATTICE_TO_WORLD,
+    z: dims.nz * LATTICE_TO_WORLD,
+  };
+}
 
 /** Domain (lattice cells) → world mapping: 1 cell = 0.1 world units. */
 const LATTICE_TO_WORLD = 0.1;
-const WORLD_OFFSET = {
-  x: (-DOMAIN.nx / 2) * LATTICE_TO_WORLD,
-  y: (-DOMAIN.ny / 2) * LATTICE_TO_WORLD,
-  z: (-DOMAIN.nz / 2) * LATTICE_TO_WORLD,
-} as const;
+
+/** Default grid (the F021 High tier) — matches the constructor-built box. */
+const DEFAULT_DIMS: GridDims = {
+  nx: DOMAIN.nx,
+  ny: DOMAIN.ny,
+  nz: DOMAIN.nz,
+};
+
+/** True for a usable grid (positive finite integers — F021 validation). */
+function isValidDims(dims: GridDims): boolean {
+  return (
+    Number.isInteger(dims.nx) &&
+    Number.isInteger(dims.ny) &&
+    Number.isInteger(dims.nz) &&
+    dims.nx > 0 &&
+    dims.ny > 0 &&
+    dims.nz > 0 &&
+    Number.isFinite(dims.nx + dims.ny + dims.nz)
+  );
+}
 
 type FrameCallback = (dtSeconds: number) => void;
 
@@ -92,6 +115,8 @@ export class SceneManager {
   private readonly subscribers: Set<FrameCallback> = new Set();
   private readonly domainGroup: Group = new Group();
   private cameraTween: CameraTween | null = null;
+  /** Current lattice grid (F021 runtime state — was the `DOMAIN` constant). */
+  private dims: GridDims = { ...DEFAULT_DIMS };
   /** OrbitControls `start` handler: user input cancels any preset flight. */
   private readonly cancelCameraTween = (): void => {
     this.cameraTween = null;
@@ -137,31 +162,11 @@ export class SceneManager {
     dir.position.set(8, 12, 6);
     this.scene.add(hemi, dir);
 
-    const domainEdges = new EdgesGeometry(
-      new BoxGeometry(DOMAIN_SIZE.x, DOMAIN_SIZE.y, DOMAIN_SIZE.z),
-    );
-    const domainLine = new LineSegments(
-      domainEdges,
-      new LineBasicMaterial({ color: "#3b82f6", transparent: true, opacity: 0.6 }),
-    );
-
-    const ground = new GridHelper(20, 40, "#1f2937", "#111827");
-    ground.position.y = -DOMAIN_SIZE.y / 2;
-
-    const inletGeo = new BoxGeometry(1, DOMAIN_SIZE.y, DOMAIN_SIZE.z);
-    const inletMat = new MeshBasicMaterial({
-      color: "#22d3ee",
-      wireframe: true,
-      transparent: true,
-      opacity: 0.25,
-    });
-    const inlet = new Mesh(inletGeo, inletMat);
-    inlet.position.x = -DOMAIN_SIZE.x / 2;
-
     // Box + grid + inlet marker share one group so F020's
-    // `setDomainBoxVisible` toggles them as a unit.
+    // `setDomainBoxVisible` toggles them as a unit. Sized from the current
+    // dims (F021) — the default dims reproduce the original 12.8×4.8×4.8 box.
     this.domainGroup.name = "domainBox";
-    this.domainGroup.add(domainLine, ground, inlet);
+    this.buildDomainContents();
     this.scene.add(this.domainGroup);
 
     const layerNames: DomainLayers[] = [
@@ -235,12 +240,13 @@ export class SceneManager {
     if (world.getAttribute("normal") === undefined) {
       world.computeVertexNormals();
     }
+    const offset = this.worldOffset();
     const matrix = new Matrix4().makeScale(
       LATTICE_TO_WORLD,
       LATTICE_TO_WORLD,
       LATTICE_TO_WORLD,
     );
-    matrix.setPosition(WORLD_OFFSET.x, WORLD_OFFSET.y, WORLD_OFFSET.z);
+    matrix.setPosition(offset.x, offset.y, offset.z);
     world.applyMatrix4(matrix);
     const material = new MeshStandardMaterial({
       color: "#9ca3af",
@@ -339,10 +345,11 @@ export class SceneManager {
    * Inverse of F005's world mapping: `world = (lattice − center) · 0.1`.
    */
   latticeToWorld(x: number, y: number, z: number): Vector3 {
+    const offset = this.worldOffset();
     return new Vector3(
-      x * LATTICE_TO_WORLD + WORLD_OFFSET.x,
-      y * LATTICE_TO_WORLD + WORLD_OFFSET.y,
-      z * LATTICE_TO_WORLD + WORLD_OFFSET.z,
+      x * LATTICE_TO_WORLD + offset.x,
+      y * LATTICE_TO_WORLD + offset.y,
+      z * LATTICE_TO_WORLD + offset.z,
     );
   }
 
@@ -354,8 +361,9 @@ export class SceneManager {
    * group configured this way instead of converting per vertex.
    */
   applyLatticeTransform(target: Group): void {
+    const offset = this.worldOffset();
     target.scale.setScalar(LATTICE_TO_WORLD);
-    target.position.set(WORLD_OFFSET.x, WORLD_OFFSET.y, WORLD_OFFSET.z);
+    target.position.set(offset.x, offset.y, offset.z);
   }
 
   /**
@@ -431,6 +439,88 @@ export class SceneManager {
   /** Show/hide the domain box edges, ground grid, and inlet marker (F020). */
   setDomainBoxVisible(on: boolean): void {
     this.domainGroup.visible = on;
+  }
+
+  /** Current lattice grid in cells (F021 runtime state). */
+  getDomainDims(): GridDims {
+    return { ...this.dims };
+  }
+
+  /**
+   * Switch the rendered domain to a new grid (F021): rebuilds the box edges,
+   * ground grid, and inlet marker at the new world size (world scale stays
+   * 0.1/cell) and re-applies the lattice→world parent transform to the
+   * particles/smoke layers so viz built for the old grid re-seats correctly.
+   * Camera presets are unchanged (fixed 18-unit offsets). Invalid dims are
+   * ignored (no-throw — panel paths must not crash); unchanged dims skip the
+   * rebuild. GPU resources of the replaced box are disposed.
+   */
+  setDomainDims(dims: GridDims): void {
+    if (!isValidDims(dims)) return;
+    if (
+      dims.nx === this.dims.nx &&
+      dims.ny === this.dims.ny &&
+      dims.nz === this.dims.nz
+    ) {
+      return;
+    }
+    this.dims = { nx: dims.nx, ny: dims.ny, nz: dims.nz };
+    this.buildDomainContents();
+    this.applyLatticeTransform(this.getLayer("particles"));
+    this.applyLatticeTransform(this.getLayer("smoke"));
+  }
+
+  /**
+   * (Re)build the domain box contents for `this.dims`: edge lines, ground
+   * grid, and inlet marker. Disposes the previous contents' GPU resources.
+   */
+  private buildDomainContents(): void {
+    for (const child of [...this.domainGroup.children]) {
+      child.removeFromParent();
+      const typed = child as unknown as {
+        geometry?: { dispose: () => void };
+        material?: { dispose: () => void } | { dispose: () => void }[];
+      };
+      typed.geometry?.dispose();
+      const material = typed.material;
+      if (Array.isArray(material)) {
+        for (const entry of material) entry.dispose();
+      } else {
+        material?.dispose();
+      }
+    }
+    const size = domainWorldSize(this.dims);
+    const domainEdges = new EdgesGeometry(
+      new BoxGeometry(size.x, size.y, size.z),
+    );
+    const domainLine = new LineSegments(
+      domainEdges,
+      new LineBasicMaterial({ color: "#3b82f6", transparent: true, opacity: 0.6 }),
+    );
+
+    const ground = new GridHelper(20, 40, "#1f2937", "#111827");
+    ground.position.y = -size.y / 2;
+
+    const inletGeo = new BoxGeometry(1, size.y, size.z);
+    const inletMat = new MeshBasicMaterial({
+      color: "#22d3ee",
+      wireframe: true,
+      transparent: true,
+      opacity: 0.25,
+    });
+    const inlet = new Mesh(inletGeo, inletMat);
+    inlet.position.x = -size.x / 2;
+
+    this.domainGroup.add(domainLine, ground, inlet);
+  }
+
+  /** Centering offset of the lattice→world mapping for the current dims. */
+  private worldOffset(): { x: number; y: number; z: number } {
+    return {
+      x: (-this.dims.nx / 2) * LATTICE_TO_WORLD,
+      y: (-this.dims.ny / 2) * LATTICE_TO_WORLD,
+      z: (-this.dims.nz / 2) * LATTICE_TO_WORLD,
+    };
   }
 
   /**

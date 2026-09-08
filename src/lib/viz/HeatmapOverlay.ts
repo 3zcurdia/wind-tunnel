@@ -1,4 +1,5 @@
 import { BufferAttribute, BufferGeometry, DynamicDrawUsage } from "three";
+import type { GridDims } from "../sim/quality";
 import { DOMAIN } from "../sim/types";
 import { pressureColorInto } from "./colormaps";
 
@@ -22,6 +23,23 @@ import { pressureColorInto } from "./colormaps";
  * (F002/F006) — `attach` inverts that mapping to recover lattice coords.
  */
 const LATTICE_TO_WORLD = 0.1;
+
+/**
+ * Centering offset of the lattice→world mapping for the given grid (matches
+ * `SceneManager`; F021 — the loop passes the engine's live dims so the
+ * world→lattice inversion tracks quality switches).
+ */
+function worldOffsetFor(dims: GridDims): {
+  x: number;
+  y: number;
+  z: number;
+} {
+  return {
+    x: (-dims.nx / 2) * LATTICE_TO_WORLD,
+    y: (-dims.ny / 2) * LATTICE_TO_WORLD,
+    z: (-dims.nz / 2) * LATTICE_TO_WORLD,
+  };
+}
 
 /** Centering offset of the lattice→world mapping (matches SceneManager). */
 const WORLD_OFFSET = {
@@ -176,14 +194,18 @@ export class HeatmapOverlay {
    * ambient mid so the mesh is never black before the first update) and
    * builds the display-vertex → stored-pressure-row index map by inverting
    * `showModel`'s lattice→world transform and replicating F006's dedup
-   * order (see DECISIONS.md F015.1). Idempotent per geometry swap — calling
+   * order (see DECISIONS.md F015.1). `dims` selects the grid the inversion
+   * uses (F021 — the loop passes the engine's live dims); omitted it inverts
+   * the compile-time `DOMAIN` mapping (the High tier), which keeps earlier
+   * callers behavior-identical. Idempotent per geometry swap — calling
    * again with a new geometry detaches the old one first. Material switching
    * (`vertexColors`) stays with the caller via
    * `SceneManager.setModelVertexColors`, which only the SceneManager can do.
    */
-  attach(geometry: BufferGeometry): void {
+  attach(geometry: BufferGeometry, dims?: GridDims): void {
     this.clear();
     this.geometry = geometry;
+    const offset = dims ? worldOffsetFor(dims) : WORLD_OFFSET;
     const position = geometry.getAttribute("position") as
       | BufferAttribute
       | undefined;
@@ -196,11 +218,11 @@ export class HeatmapOverlay {
     const lattice = new Float32Array(count * 3);
     for (let i = 0; i < count; i += 1) {
       lattice[i * 3] =
-        (Number(source[i * 3] ?? 0) - WORLD_OFFSET.x) / LATTICE_TO_WORLD;
+        (Number(source[i * 3] ?? 0) - offset.x) / LATTICE_TO_WORLD;
       lattice[i * 3 + 1] =
-        (Number(source[i * 3 + 1] ?? 0) - WORLD_OFFSET.y) / LATTICE_TO_WORLD;
+        (Number(source[i * 3 + 1] ?? 0) - offset.y) / LATTICE_TO_WORLD;
       lattice[i * 3 + 2] =
-        (Number(source[i * 3 + 2] ?? 0) - WORLD_OFFSET.z) / LATTICE_TO_WORLD;
+        (Number(source[i * 3 + 2] ?? 0) - offset.z) / LATTICE_TO_WORLD;
     }
     this.indexMap = buildStoredIndexMap(lattice);
     const colors = new Float32Array(count * 3);

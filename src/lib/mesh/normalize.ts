@@ -1,4 +1,5 @@
 import { Matrix4, Vector3, type BufferGeometry } from "three";
+import type { GridDims } from "../sim/quality";
 import { DOMAIN, DegenerateModelError, type Vec3 } from "../sim/types";
 
 export interface NormalizedModel {
@@ -14,8 +15,18 @@ export interface NormalizedModel {
  * longest bbox side equals 0.25·nx cells, then translate so the bbox center
  * lands at (0.35·nx, ny/2, nz/2). The input geometry is cloned, never mutated.
  * Throws DegenerateModelError on zero-size bounding boxes.
+ *
+ * `dims` selects the target grid (F021 — the loop passes the engine's live
+ * dims); omitted it targets the compile-time `DOMAIN` (the High tier), which
+ * keeps earlier callers and harnesses behavior-identical.
  */
-export function normalizeToDomain(geometry: BufferGeometry): NormalizedModel {
+export function normalizeToDomain(
+  geometry: BufferGeometry,
+  dims?: GridDims,
+): NormalizedModel {
+  const nx = dims?.nx ?? DOMAIN.nx;
+  const ny = dims?.ny ?? DOMAIN.ny;
+  const nz = dims?.nz ?? DOMAIN.nz;
   const position = geometry.getAttribute("position");
   if (!position || position.count === 0) {
     throw new DegenerateModelError("Model has no vertices");
@@ -31,12 +42,12 @@ export function normalizeToDomain(geometry: BufferGeometry): NormalizedModel {
   if (!(longest > 0) || !Number.isFinite(longest)) {
     throw new DegenerateModelError("Model has zero-size bounding box");
   }
-  const targetSize = 0.25 * DOMAIN.nx;
+  const targetSize = 0.25 * nx;
   const scale = targetSize / longest;
   const targetCenter: [number, number, number] = [
-    0.35 * DOMAIN.nx,
-    DOMAIN.ny / 2,
-    DOMAIN.nz / 2,
+    0.35 * nx,
+    ny / 2,
+    nz / 2,
   ];
   const translation: [number, number, number] = [
     targetCenter[0] - center.x * scale,

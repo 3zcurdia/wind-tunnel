@@ -6,6 +6,7 @@ import {
   LineSegments,
   type Group,
 } from "three";
+import type { GridDims } from "../sim/quality";
 import { DOMAIN } from "../sim/types";
 
 /**
@@ -76,6 +77,13 @@ export interface SmokeTracersOptions {
   readonly seedLine?: Partial<SmokeSeedLine>;
   readonly seedX?: number;
   readonly speedScale?: number;
+  /**
+   * Grid the rake lives in (F021 — the loop passes the engine's live dims
+   * so domain-exit checks and the layer offset track quality switches).
+   * Omitted it means the compile-time `DOMAIN` (the High tier), which keeps
+   * earlier callers and the committed unit suite behavior-identical.
+   */
+  readonly domainDims?: GridDims;
 }
 
 /**
@@ -98,10 +106,11 @@ function clampHistoryLen(n: number): number {
 
 function resolveSeedLine(
   seedLine: Partial<SmokeSeedLine> | undefined,
+  dims: GridDims,
 ): SmokeSeedLine {
   return {
-    yCenter: seedLine?.yCenter ?? DOMAIN.ny / 2,
-    zCenter: seedLine?.zCenter ?? DOMAIN.nz / 2,
+    yCenter: seedLine?.yCenter ?? dims.ny / 2,
+    zCenter: seedLine?.zCenter ?? dims.nz / 2,
     halfWidth: seedLine?.halfWidth ?? 8,
   };
 }
@@ -119,6 +128,8 @@ export class SmokeTracers {
   seedX: number;
   /** Velocity gain applied as `p += v·dt·speedScale` (spec default 1.0). */
   speedScale: number;
+  /** Grid the rake lives in (F021 — domain-exit checks use this). */
+  readonly domainDims: GridDims;
 
   /** Current tracer positions (`tracerCount×3`, domain space). */
   readonly pos: Float32Array;
@@ -149,19 +160,20 @@ export class SmokeTracers {
       options.historyLen ?? SMOKE_HISTORY_LEN_DEFAULT,
     );
     this.seedX = options.seedX ?? SMOKE_SEED_X_DEFAULT;
+    this.domainDims = { ...(options.domainDims ?? DOMAIN) };
     this.speedScale =
       options.speedScale !== undefined &&
       Number.isFinite(options.speedScale) &&
       options.speedScale > 0
         ? options.speedScale
         : 1.0;
-    this.seedLine = resolveSeedLine(options.seedLine);
+    this.seedLine = resolveSeedLine(options.seedLine, this.domainDims);
 
     layer.scale.setScalar(LATTICE_TO_WORLD);
     layer.position.set(
-      (-DOMAIN.nx / 2) * LATTICE_TO_WORLD,
-      (-DOMAIN.ny / 2) * LATTICE_TO_WORLD,
-      (-DOMAIN.nz / 2) * LATTICE_TO_WORLD,
+      (-this.domainDims.nx / 2) * LATTICE_TO_WORLD,
+      (-this.domainDims.ny / 2) * LATTICE_TO_WORLD,
+      (-this.domainDims.nz / 2) * LATTICE_TO_WORLD,
     );
 
     this.pos = new Float32Array(count * 3);
@@ -233,16 +245,17 @@ export class SmokeTracers {
       const nx = (pos[i * 3] ?? 0) + vx * gain;
       const ny = (pos[i * 3 + 1] ?? 0) + vy * gain;
       const nz = (pos[i * 3 + 2] ?? 0) + vz * gain;
+      const dims = this.domainDims;
       if (
         !Number.isFinite(nx) ||
         !Number.isFinite(ny) ||
         !Number.isFinite(nz) ||
         nx < 0 ||
-        nx >= DOMAIN.nx ||
+        nx >= dims.nx ||
         ny < 0 ||
-        ny >= DOMAIN.ny ||
+        ny >= dims.ny ||
         nz < 0 ||
-        nz >= DOMAIN.nz
+        nz >= dims.nz
       ) {
         continue; // freeze at the head position (stagnant smoke)
       }
@@ -267,9 +280,10 @@ export class SmokeTracers {
    */
   setRake(yCenter: number, zCenter: number, halfWidth: number): void {
     if (this.disposed) return;
+    const dims = this.domainDims;
     this.seedLine = {
-      yCenter: Number.isFinite(yCenter) ? yCenter : DOMAIN.ny / 2,
-      zCenter: Number.isFinite(zCenter) ? zCenter : DOMAIN.nz / 2,
+      yCenter: Number.isFinite(yCenter) ? yCenter : dims.ny / 2,
+      zCenter: Number.isFinite(zCenter) ? zCenter : dims.nz / 2,
       halfWidth:
         Number.isFinite(halfWidth) && halfWidth >= 0 ? halfWidth : 8,
     };

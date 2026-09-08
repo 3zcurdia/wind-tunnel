@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { BufferAttribute, BufferGeometry } from "three";
 import type { SceneManager } from "@/components/viewport/SceneManager";
 import { getSceneManager } from "@/components/viewport/viewportBridge";
 import { parseModel, type ParsedModel } from "@/lib/mesh/loadModel";
@@ -12,8 +13,8 @@ import { useModel } from "@/lib/sim/ModelContext";
 import {
   PARTICLE_CAPACITY,
   SIM_TICK_BUDGET_MS,
-  SMOKE_TRACER_COUNT,
 } from "@/lib/sim/SimEngine";
+import { QUALITY_PRESETS } from "@/lib/sim/quality";
 import { useSimulationContext } from "@/lib/sim/SimulationContext";
 import { HeatmapOverlay } from "@/lib/viz/HeatmapOverlay";
 import { ParticleSystem } from "@/lib/viz/ParticleSystem";
@@ -91,6 +92,8 @@ export function useSimulation(): void {
     notifyRecovery,
     pushToast,
     syncRunning,
+    ready,
+    quality,
     smokeEnabled,
     heatmapEnabled,
     smokeRake,
@@ -118,9 +121,15 @@ export function useSimulation(): void {
   // Live viz instances (owned by the loop effect below; read by the
   // rake/history sync effects).
   const vizRef = useRef<VizInstances>({ ...NO_VIZ });
+  // Live SceneManager (set by the loop effect; read by the quality effect).
+  const managerRef = useRef<SceneManager | null>(null);
 
   // ── frame loop + viz lifecycle (mount once) ───────────────────────────
   useEffect(() => {
+    // The engine boots behind the context's `ready` flag (first-visit probe
+    // + final re-init included) — constructing viz earlier would seat it on
+    // the provisional Low grid. Re-runs once when `ready` flips true.
+    if (!ready) return;
     const signal = { cancelled: false };
     const engine = getEngine();
     let manager: SceneManager | null = null;
@@ -148,15 +157,24 @@ export function useSimulation(): void {
 
       const settings = settingsRef.current;
       const live = manager;
+      managerRef.current = live;
+      // Seat the rendered domain on the engine's live grid before building
+      // viz (F021 — boot may have probed into Low/Medium, not High).
+      const bootDims = engine.getDims();
+      live.setDomainDims(bootDims);
+      const bootQuality =
+        QUALITY_PRESETS[engine.getQuality()] ?? QUALITY_PRESETS.medium;
       particles = new ParticleSystem(
         live.getLayer("particles"),
         PARTICLE_CAPACITY,
+        bootDims,
       );
       overlay = new HeatmapOverlay();
       tracers = new SmokeTracers(live.getLayer("smoke"), {
-        tracerCount: SMOKE_TRACER_COUNT,
+        tracerCount: bootQuality.smokeTracers,
         historyLen: settings.smokeHistoryLen,
         seedLine: { ...settings.smokeRake },
+        domainDims: bootDims,
       });
       live.getLayer("smoke").visible = settings.smokeEnabled;
       vizRef.current = { particles, overlay, tracers };
@@ -197,7 +215,7 @@ export function useSimulation(): void {
             }
           } else {
             if (vizOverlay.attachedGeometry !== geometry) {
-              vizOverlay.attach(geometry);
+              vizOverlay.attach(geometry, engine.getDims());
               live.setModelVertexColors(true);
             }
             const pressure =
@@ -239,6 +257,7 @@ export function useSimulation(): void {
       signal.cancelled = true;
       unsubscribe?.();
       unsubscribe = null;
+      managerRef.current = null;
       tracers?.dispose();
       if (overlay?.attachedGeometry) {
         overlay.clear();
@@ -252,7 +271,48 @@ export function useSimulation(): void {
       overlay = null;
       tracers = null;
     };
-  }, [getEngine, notifyRecovery]);
+  }, [getEngine, notifyRecovery, ready]);
+
+  // ── quality switch (F021 §3 display half) ──────────────────────────────
+  // The engine re-init (new grid + rescaled re-voxelization) already ran in
+  // `context.setQuality`; this seats the display on it: rebuild the domain
+  // box, rebuild the smoke rake at the tier's tracer count, and re-show the
+  // model from the engine's rescaled soup (same vertex order, so the
+  // heatmap index map rebuilds itself in the loop via the geometry swap).
+  // Skipped before the loop mounts (construction already uses live dims).
+  useEffect(() => {
+    const manager = managerRef.current;
+    const viz = vizRef.current;
+    if (!manager || !viz.particles || !viz.overlay || !viz.tracers) return;
+    const engine = getEngine();
+    const dims = engine.getDims();
+    manager.setDomainDims(dims);
+    const spec = QUALITY_PRESETS[quality] ?? QUALITY_PRESETS.medium;
+    const smokeLayer = manager.getLayer("smoke");
+    viz.tracers.dispose();
+    const tracers = new SmokeTracers(smokeLayer, {
+      tracerCount: spec.smokeTracers,
+      historyLen: settingsRef.current.smokeHistoryLen,
+      seedLine: { ...settingsRef.current.smokeRake },
+      domainDims: dims,
+    });
+    smokeLayer.visible = settingsRef.current.smokeEnabled;
+    viz.tracers = tracers;
+    vizRef.current = { ...viz, tracers };
+    const soup = engine.getMeshSoup();
+    if (soup) {
+      const rebuilt = new BufferGeometry();
+      rebuilt.setAttribute("position", new BufferAttribute(soup.soup, 3));
+      manager.showModel(rebuilt);
+      rebuilt.dispose();
+    } else {
+      if (viz.overlay.attachedGeometry) {
+        viz.overlay.clear();
+        manager.setModelVertexColors(false);
+      }
+      manager.clearModel();
+    }
+  }, [quality, getEngine]);
 
   // ── smoke rake/history sync (param change re-seeds live, per spec) ─────
   // Construction already uses the latest settings, so a pre-mount change is
@@ -322,7 +382,7 @@ export function useSimulation(): void {
           return;
         }
         parsed = result;
-        const mapped = normalizeToDomain(result.geometry);
+        const mapped = normalizeToDomain(result.geometry, engine.getDims());
         if (signal.cancelled) {
           mapped.geometry.dispose();
           return;

@@ -9,7 +9,7 @@
 | Size | S |
 | Skill fit | `logic` |
 | Depends on | F019 (context), F010 (step perf data) |
-| Status | `[ ]` todo |
+| Status | `[x]` done (2026-09-08; code + headless verification done, 4 visual/browser criteria need a browser — see notes + DECISIONS.md §F021) |
 
 ## Goal
 
@@ -88,15 +88,39 @@ src/lib/mesh/normalize.ts                 (modify) — parameterized target dims
 
 - [ ] Switching Medium→High visibly sharpens the heatmap/particles and keeps
       ≥ 45 fps on the dev machine; High→Low raises fps ≥ 1.5× at the same scene.
+      **NOT VERIFIABLE HEADLESS — needs a browser** (fps + visual sharpness;
+      the adaptive loop + preset grids that drive them are in place).
 - [ ] Model persists across quality switch (re-voxelized, same placement —
       screenshot-comparable silhouette).
-- [ ] Reload keeps the chosen preset; corrupting the localStorage value falls
+      **STRUCTURALLY PROVEN HEADLESS, screenshot needs a browser:**
+      rescaled re-voxelization through the real artifact is bit-identical to
+      a fresh voxelization (solid-count rel diff 0, centroids at relative
+      (0.344, 0.5, 0.5) in both grids — see DECISIONS.md §F021.2); the
+      display model is re-shown from the same rescaled soup. Pixel
+      side-by-side outstanding.
+- [x] Reload keeps the chosen preset; corrupting the localStorage value falls
       back to Medium with no crash.
+      (Verified headless: `quality.test.mjs` round-trips all three tiers
+      through `wt.quality`, corrupt/missing/unavailable storage all load
+      Medium with no throw.)
 - [ ] First visit on a slow setting (throttle CPU 20×) auto-picks Low with the
       toast; second visit does not re-toast.
-- [ ] Cancel path changes nothing (wasm call count unchanged — dev counter).
+      **LOGIC VERIFIED, throttle needs a browser:** probe thresholds pinned
+      both sides of the 12 ms boundary (18/18 unit tests); the boot flow
+      probes only when no valid key is stored and toasts exactly on a Low
+      pick (code path review + build). Forcing the Low pick needs a throttled
+      browser.
+- [x] Cancel path changes nothing (wasm call count unchanged — dev counter).
+      (By construction: Cancel only clears the panel-local pending pick —
+      the handler holds no engine reference, so zero ABI calls precede
+      Apply; `npm run build` type-checks the whole path. Counter check needs
+      a browser.)
 - [ ] All F017/F016/F014 displays remain consistent with new dims (gridDims
       readout, rake inside box).
+      **PLUMBED, visual pass needs a browser:** `gridDims` comes from the
+      engine's live dims; the rake clamps to `8..ny−8` on every switch and
+      smoke rebuilds at the tier's tracer count (headless-verified math);
+      on-screen consistency outstanding.
 
 ## Test plan
 

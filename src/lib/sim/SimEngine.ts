@@ -5,6 +5,12 @@ import {
   DOMAIN_LENGTH_M,
   type FlowConditions,
 } from "@/lib/sim/conditions";
+import {
+  QUALITY_PRESETS,
+  type GridDims,
+  type QualityLevel,
+  type QualitySpec,
+} from "@/lib/sim/quality";
 import { DOMAIN, type SimReadout } from "@/lib/sim/types";
 import { loadWasm, type WasmApi } from "@/lib/sim/wasm";
 
@@ -105,7 +111,7 @@ export const PARTICLE_COUNT_STEP = 5000;
 export const PARTICLE_COUNT_DEFAULT = 30000;
 
 /** Smoke rake size default (F016 §1; single owner since F019). */
-export const SMOKE_TRACER_COUNT = 25;
+export const SMOKE_TRACER_COUNT = 25; // F021: superseded by QUALITY_PRESETS smoke counts; kept for API stability.
 /** Trail-length UI range (F016 §2). */
 export const SMOKE_HISTORY_MIN = 30;
 export const SMOKE_HISTORY_MAX = 240;
@@ -234,12 +240,58 @@ function triangleSoup(geometry: BufferGeometry): Float32Array {
   return out;
 }
 
+/**
+ * Rescale a domain-space triangle soup from one grid to another (F021).
+ *
+ * Pure helper for the quality-switch re-voxelization: every F021 tier keeps
+ * the 8:3:3 aspect, and `normalizeToDomain` places models at fixed fractions
+ * of the grid (longest side = 0.25·nx, center = (0.35·nx, ny/2, nz/2)), so a
+ * soup normalized for `from` rescales *exactly* to what a fresh
+ * normalization for `to` would produce (uniform ratio — per-axis multiply is
+ * the robust form). The input is never mutated; an empty soup stays empty.
+ */
+export function rescaleTriangleSoup(
+  soup: Float32Array,
+  from: GridDims,
+  to: GridDims,
+): Float32Array {
+  const out = new Float32Array(soup.length);
+  const rx = to.nx / from.nx;
+  const ry = to.ny / from.ny;
+  const rz = to.nz / from.nz;
+  for (let i = 0; i + 2 < soup.length; i += 3) {
+    out[i] = (soup[i] ?? 0) * rx;
+    out[i + 1] = (soup[i + 1] ?? 0) * ry;
+    out[i + 2] = (soup[i + 2] ?? 0) * rz;
+  }
+  return out;
+}
+
+/** Options for `SimEngine.init` (F021: boot grid + pool target are runtime). */
+export interface SimEngineInit {
+  /** Quality tier selecting the boot grid (default `"medium"`). */
+  readonly quality?: QualityLevel;
+  /** Particle pool target (default: the tier's preset count). */
+  readonly particleCount?: number;
+}
+
 export class SimEngine {
   private api: FullWasmApi | null = null;
   private initPromise: Promise<void> | null = null;
   private running = true;
   private stepsPerFrame = 2;
   private particleTarget = PARTICLE_COUNT_DEFAULT;
+  /** Current lattice grid (F021: runtime state, was the `DOMAIN` constant). */
+  private dims: GridDims = { ...QUALITY_PRESETS.medium.grid };
+  /** Quality tier the current grid came from (F021). */
+  private quality: QualityLevel = "medium";
+  /**
+   * Last voxelized triangle soup + the grid it was normalized for (F021).
+   * `setMesh` caches a copy so a quality switch can re-voxelize without the
+   * original file bytes; the rescale is exact (see `rescaleTriangleSoup`).
+   * Null with no mesh.
+   */
+  private cachedMesh: { soup: Float32Array; dims: GridDims } | null = null;
   private inletULattice = 0.05;
   private lastConditions: FlowConditions = DEFAULT_CONDITIONS;
   private applied: AppliedConditions = {
@@ -259,17 +311,31 @@ export class SimEngine {
   private lastStepsMs = 0;
 
   /**
-   * Lifecycle: `loadWasm()` → `init_sim(DOMAIN, capacity)` →
+   * Lifecycle: `loadWasm()` → `init_sim(dims, capacity)` →
    * `set_conditions(defaults)` → `reset_flow()` → initial particle spawn.
-   * Idempotent — concurrent callers share one promise, and a second call
-   * after success is a no-op (StrictMode double-mount safe). A rejection is
-   * never cached: the next call retries fresh.
+   * The boot grid/pool target come from `options` (F021 — the
+   * `SimulationContext` passes the stored or probed tier); omitted options
+   * boot the Medium preset. Idempotent — concurrent callers share one
+   * promise, and a second call after success is a no-op (StrictMode
+   * double-mount safe). A rejection is never cached: the next call retries
+   * fresh.
    */
-  init(): Promise<void> {
+  init(options?: SimEngineInit): Promise<void> {
     if (this.initPromise) return this.initPromise;
+    const spec: QualitySpec =
+      QUALITY_PRESETS[options?.quality ?? "medium"] ??
+      QUALITY_PRESETS.medium;
+    const target =
+      options?.particleCount !== undefined &&
+      Number.isFinite(options.particleCount)
+        ? Math.max(0, Math.floor(options.particleCount))
+        : spec.particles;
     this.initPromise = (async () => {
       const api = (await loadWasm()) as FullWasmApi;
-      api.init_sim(DOMAIN.nx, DOMAIN.ny, DOMAIN.nz, PARTICLE_CAPACITY);
+      this.dims = { ...spec.grid };
+      this.quality = spec.level;
+      this.particleTarget = target;
+      api.init_sim(this.dims.nx, this.dims.ny, this.dims.nz, PARTICLE_CAPACITY);
       const params = api.set_conditions(
         DEFAULT_CONDITIONS.uMps,
         DEFAULT_CONDITIONS.pressureKpa,
@@ -322,18 +388,33 @@ export class SimEngine {
 
   // ── model API ──────────────────────────────────────────────────────────
 
+  /** Current lattice grid in cells (F021: runtime state). */
+  getDims(): GridDims {
+    return { ...this.dims };
+  }
+
+  /** Quality tier the current grid came from (F021). */
+  getQuality(): QualityLevel {
+    return this.quality;
+  }
+
   /**
    * Voxelize a domain-space (lattice cells) geometry: builds the triangle
    * f32 array, calls `set_mesh`, stores the solid count + surface flag.
+   * Caches a copy of the soup with the current dims (F021) so a later
+   * quality switch can re-voxelize without the original file bytes.
    * Pointer-affecting call — callers must re-fetch views afterwards (all
    * accessors here create fresh views per call, so nothing goes stale).
    */
   setMesh(geometry: BufferGeometry): MeshResult {
     const api = this.requireApi();
-    const solidCount = api.set_mesh(triangleSoup(geometry));
+    const soup = triangleSoup(geometry);
+    const solidCount = api.set_mesh(soup);
     const surfaceMode = api.surface_mode_flag();
     this.solidCount = solidCount;
     this.surfaceMode = surfaceMode;
+    this.cachedMesh = { soup: soup.slice(), dims: { ...this.dims } };
+    return { solidCount, surfaceMode };
     return { solidCount, surfaceMode };
   }
 
@@ -343,6 +424,7 @@ export class SimEngine {
     api.clear_mesh();
     this.solidCount = 0;
     this.surfaceMode = false;
+    this.cachedMesh = null;
   }
 
   /** Solid cell count from the last `setMesh` (0 with no mesh). */
@@ -353,6 +435,20 @@ export class SimEngine {
   /** True when the last `setMesh` fell back to shell-only mode (F006). */
   getSurfaceMode(): boolean {
     return this.surfaceMode;
+  }
+
+  /**
+   * Cached voxelized soup + the grid it was normalized for (F021), or null
+   * with no mesh. Returns copies — the engine's cache stays immutable so
+   * repeated quality switches never accumulate rescale drift. The display
+   * layer (`useSimulation`) rebuilds the scene model from this after a
+   * switch; the loop's heatmap index map follows automatically (same vertex
+   * order, monotonic rescale — see DECISIONS.md §F021).
+   */
+  getMeshSoup(): { soup: Float32Array; dims: GridDims } | null {
+    const cached = this.cachedMesh;
+    if (!cached) return null;
+    return { soup: cached.soup.slice(), dims: { ...cached.dims } };
   }
 
   // ── conditions API ─────────────────────────────────────────────────────
@@ -442,6 +538,87 @@ export class SimEngine {
     void _dropped;
     this.requireApi().reset_flow();
     return applied;
+  }
+
+  // ── quality presets (F021) ─────────────────────────────────────────────
+
+  /**
+   * Hidden warm-up for the first-visit auto-probe (F021 §1): run one
+   * `step(8)` at the boot (Low) grid and return `timing().avg_step_ms` for
+   * `probeQuality`. Leaves a clean uniform flow behind (`reset_flow`) so the
+   * caller can keep the instance as-is when the probe picks Low. Throws when
+   * used before `init()` completed.
+   */
+  warmupStepMs(): number {
+    const api = this.requireApi();
+    api.step(8);
+    const timing = api.timing();
+    try {
+      const ms = timing.avg_step_ms;
+      return Number.isFinite(ms) && ms >= 0 ? ms : 0;
+    } finally {
+      timing.free();
+      api.reset_flow();
+    }
+  }
+
+  /**
+   * Quality-switch re-init (F021 §3 — the exact spec sequence): `init_sim`
+   * at the new dims → re-commit the current conditions (the rebuild resets
+   * solver params) → re-voxelize the cached mesh rescaled to the new grid
+   * (skipped with no mesh) → `reset_flow` → `spawn_particles` at the
+   * tier's preset count. Smoke re-seeding rides the context's rake state
+   * (the loop's rake-sync effect re-seeds on the clamped values).
+   *
+   * Pointer-affecting (ARCHITECTURE.md §5): all accessors here create fresh
+   * views per call, so nothing goes stale. Adaptive state restarts
+   * (`stepsPerFrame` 2, EMA cleared) — the new grid has new timing.
+   * The run/pause flag and the last conditions are kept.
+   */
+  applyQuality(level: QualityLevel): QualitySpec {
+    const api = this.requireApi();
+    const spec: QualitySpec =
+      QUALITY_PRESETS[level] ?? QUALITY_PRESETS.medium;
+    const nextDims: GridDims = { ...spec.grid };
+    const prevDims: GridDims = { ...this.dims };
+    this.quality = spec.level;
+    this.dims = nextDims;
+    api.init_sim(nextDims.nx, nextDims.ny, nextDims.nz, PARTICLE_CAPACITY);
+    const conditions = api.set_conditions(
+      this.lastConditions.uMps,
+      this.lastConditions.pressureKpa,
+      this.lastConditions.viscosityPas,
+      DOMAIN_LENGTH_M,
+      DEFAULT_CHAR_LEN_M,
+    );
+    try {
+      if (Number.isFinite(conditions.u_lattice) && conditions.u_lattice > 0) {
+        this.inletULattice = conditions.u_lattice;
+      }
+      this.applied = {
+        uLattice: conditions.u_lattice,
+        tau: conditions.tau,
+        unstable: conditions.unstable,
+      };
+    } finally {
+      conditions.free();
+    }
+    const cached = this.cachedMesh;
+    if (cached && cached.soup.length > 0) {
+      const rescaled = rescaleTriangleSoup(cached.soup, prevDims, nextDims);
+      this.solidCount = api.set_mesh(rescaled);
+      this.surfaceMode = api.surface_mode_flag();
+    } else {
+      this.solidCount = 0;
+      this.surfaceMode = false;
+    }
+    api.reset_flow();
+    this.particleTarget = spec.particles;
+    api.spawn_particles(spec.particles);
+    this.stepsPerFrame = 2;
+    this.avgStepMs = 0;
+    this.lastSteps = null;
+    return spec;
   }
 
   // ── particles ──────────────────────────────────────────────────────────
@@ -668,7 +845,7 @@ export class SimEngine {
           pMaxPa: Number.isFinite(record.p_max_pa) ? record.p_max_pa : 0,
           qRefPa: Number.isFinite(anchors.qRefPa) ? anchors.qRefPa : 0,
           re: Number.isFinite(record.re) ? record.re : 0,
-          gridDims: [DOMAIN.nx, DOMAIN.ny, DOMAIN.nz],
+          gridDims: [this.dims.nx, this.dims.ny, this.dims.nz],
           activeParticles: record.active_particles,
           stable: record.stable,
           modelName: null,

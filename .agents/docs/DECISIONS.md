@@ -833,3 +833,66 @@ dt = 3.840042373e-05 s, τ_direct = 0.5000283718 → reported τ = 0.505
    three F008 giants were verified in release only (the `collide_pass` delta
    is numerically inert — it only reads ρ/u and writes two state fields on
    violation — so their debug behaviour is unchanged from F008's sign-off).
+
+---
+
+## 2026-09-08 — F021 (quality presets)
+
+Headless probes drive the real `--target web` artifact via `initSync`
+(F014/F019 pattern), Node 26.8.1, Apple M4 Pro; `node --test
+src/lib/sim/quality.test.mjs` 18/18 pass; full TS suite 74/74 pass;
+`npm run lint` zero errors/warnings; `npm run build` succeeds (the Quality
+segmented control prerenders in `index.html`). No Rust files touched, so
+`cargo test` / `npm run wasm:build` are waived (ABI unchanged).
+
+1. **File-list overrun for the §5 DOMAIN migration (F019 §F019.2
+   precedent).** The Files list covers `quality.ts`, `SimEngine.ts`,
+   `SimulationContext.tsx`, `ControlPanel.tsx`, `SceneManager.ts`, and
+   `normalize.ts` — but §5 requires every `DOMAIN` consumer to switch to
+   runtime dims, which needs three more minimal, backward-compatible edits:
+   `ParticleSystem` (optional ctor `dims`, default = High behavior),
+   `SmokeTracers` (optional `domainDims` option driving the layer offset,
+   rake defaults, and domain-exit checks; default = High behavior), and
+   `HeatmapOverlay.attach` (optional `dims` for the world→lattice inversion;
+   default = High behavior). All three keep prior callers and the committed
+   `node --test` suites behavior-identical (74/74 still pass unmodified).
+   `useSimulation.ts` is likewise extended (dims threading, ready-gated viz
+   construction, quality-switch display effect) — the re-init sequence is
+   split per ownership: engine owns wasm, the loop owns display.
+   Deliberately NOT migrated (correct via clamping, noted for F022-or-later):
+   `StatsPanel`'s pre-ready `gridDims` fallback (first 4 Hz poll, ≤ 250 ms,
+   corrects itself from `engine.getReadout()`) and `SmokeControls`' rake
+   slider max (High-based 40; the context clamps actual values to the live
+   `8..ny−8` window, so Low drags saturate at 16 without crashing).
+2. **Re-voxelization rescales the cached soup — provably exact, no re-parse.**
+   All tiers share the 8:3:3 aspect and `normalizeToDomain` places models at
+   fixed grid fractions, so a soup normalized for one tier rescales exactly
+   to a fresh normalization for another (`rescaleTriangleSoup`, per-axis
+   multiply; the cache keeps the original + its dims, so repeated switches
+   never accumulate drift). Headless proof: High→Low max abs diff **0**
+   (bit-exact), High→Medium 1.9e-6 (one f32 ulp); through real wasm,
+   Low-soup×2 re-voxelized at High vs a fresh High soup: solid-count rel
+   diff **0** (35937 == 35937), both `surface_mode = false`, and solid
+   centroids at relative (0.344, 0.5, 0.5) in both grids (the 0.35-target
+   box voxelizes symmetric to ±half-cell) — the "screenshot-comparable
+   silhouette" criterion holds structurally; pixel comparison needs a
+   browser.
+3. **`probeQuality` maps non-finite/non-positive timers to Medium.** A NaN /
+   ±Infinity / ≤ 0 `avg_step_ms` is a broken clock, not a slow device — it
+   must not strand a fast machine on Low. Pinned by test (strict `>` keeps
+   the exact 12 ms boundary on Medium).
+4. **`SimEngine.init()` default is now Medium (was High/`DOMAIN`).** Every
+   real caller (the context boot) passes an explicit tier; the default only
+   covers standalone/probe use and matches the spec's "Medium (default)".
+   `PARTICLE_CAPACITY` stays 100k (covers High's 60k); the tier only moves
+   the spawn target. `SMOKE_TRACER_COUNT` (25) is superseded by the preset
+   table and kept as a commented export for API stability.
+5. **Warm-up number on this machine (reference, not a gate).** `step(8)` at
+   the Low grid under Node-wasm: `avg_step_ms ≈ 0.96` → ×8 ≈ 7.7 ms < 12 ms
+   → this machine probes **Medium**. Node-wasm timing is not browser timing;
+   real first visits decide per device.
+
+Observed values: per-tier placement exact (Low center (22.4, 12, 12) size
+16; Medium (33.6, 18, 18) size 24; High (44.8, 24, 24) size 32);
+conditions re-commit across an `init_sim` rebuild is bit-identical
+(u_lattice, τ); `spawn` + 2 steps post-switch stay `stable == true`.

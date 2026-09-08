@@ -6,6 +6,7 @@ import {
   PointsMaterial,
   type Group,
 } from "three";
+import type { GridDims } from "../sim/quality";
 import { DOMAIN } from "../sim/types";
 import { speedColorInto } from "./colormaps";
 
@@ -48,17 +49,23 @@ export class ParticleSystem {
    * Build the points cloud on `layer` (usually
    * `SceneManager.getLayer('particles')`) with room for `capacity` points.
    * Applies the lattice→world parent transform to the layer (idempotent —
-   * safe to re-apply when SceneManager pre-configured it).
+   * safe to re-apply when SceneManager pre-configured it). `dims` selects
+   * the grid the transform centers on (F021 — the loop passes the engine's
+   * live dims); omitted it centers on the compile-time `DOMAIN` (the High
+   * tier), which keeps earlier callers behavior-identical.
    */
-  constructor(layer: Group, capacity = 30000) {
+  constructor(layer: Group, capacity = 30000, dims?: GridDims) {
     const cap = Math.max(1, Math.floor(capacity));
     this.capacity = cap;
+    const nx = dims?.nx ?? DOMAIN.nx;
+    const ny = dims?.ny ?? DOMAIN.ny;
+    const nz = dims?.nz ?? DOMAIN.nz;
 
     layer.scale.setScalar(LATTICE_TO_WORLD);
     layer.position.set(
-      (-DOMAIN.nx / 2) * LATTICE_TO_WORLD,
-      (-DOMAIN.ny / 2) * LATTICE_TO_WORLD,
-      (-DOMAIN.nz / 2) * LATTICE_TO_WORLD,
+      (-nx / 2) * LATTICE_TO_WORLD,
+      (-ny / 2) * LATTICE_TO_WORLD,
+      (-nz / 2) * LATTICE_TO_WORLD,
     );
 
     this.positionAttr = new BufferAttribute(new Float32Array(cap * 3), 3);

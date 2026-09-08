@@ -12,13 +12,22 @@ import {
 } from "react";
 import type { FlowConditions } from "@/lib/sim/conditions";
 import {
+  hasStoredQuality,
+  isQualityLevel,
+  loadStoredQuality,
+  probeQuality,
+  QUALITY_PRESETS,
+  storeQuality,
+  type GridDims,
+  type QualityLevel,
+} from "@/lib/sim/quality";
+import {
   SMOKE_HALF_WIDTH_MAX,
   SMOKE_HALF_WIDTH_MIN,
   SMOKE_HISTORY_DEFAULT,
   SMOKE_HISTORY_MAX,
   SMOKE_HISTORY_MIN,
   SMOKE_RAKE_DEFAULT,
-  SMOKE_RAKE_Y_MAX,
   SMOKE_RAKE_Y_MIN,
   PARTICLE_COUNT_DEFAULT,
   getSimEngine,
@@ -66,6 +75,25 @@ export interface SimulationContextValue {
   /** True when the last committed point needed τ clamping (ARCH §6). */
   readonly conditionsUnstable: boolean;
   readonly transport: SimulationTransport;
+  /**
+   * Active quality tier (F021). Drives grid dims, the particle target, and
+   * the smoke rake size; persisted to localStorage.
+   */
+  readonly quality: QualityLevel;
+  /**
+   * Switch tier (F021 §3): engine re-init (`init_sim` → re-voxelize →
+   * `reset_flow` → `spawn_particles`) with no page reload. Shows the inline
+   * confirm in the panel first — this call is the Apply path. Resolves when
+   * the re-init commits; surfaces failures as the context error state.
+   * No-op when the tier is already active.
+   */
+  setQuality(level: QualityLevel): Promise<void>;
+  /**
+   * True when the first-visit auto-probe picked Low for this device (F021
+   * §4 — the provider toasts "Quality set to Low for this device" once;
+   * repeat visits read the stored value and never re-toast).
+   */
+  readonly autoProbed: boolean;
   /** Particle target count (5k–100k slider echoes this). */
   readonly particleCount: number;
   setParticleCount(count: number): void;
@@ -122,13 +150,17 @@ function clampSmokeRake(
   yCenter: number,
   zCenter: number,
   halfWidth: number,
+  dims?: GridDims,
 ): SmokeRakeState {
+  const ny = dims?.ny ?? DOMAIN.ny;
+  const nz = dims?.nz ?? DOMAIN.nz;
+  const yMax = ny - SMOKE_RAKE_Y_MIN;
   const y = Number.isFinite(yCenter)
-    ? Math.min(SMOKE_RAKE_Y_MAX, Math.max(SMOKE_RAKE_Y_MIN, yCenter))
-    : DOMAIN.ny / 2;
+    ? Math.min(yMax, Math.max(SMOKE_RAKE_Y_MIN, yCenter))
+    : ny / 2;
   const z = Number.isFinite(zCenter)
-    ? Math.min(DOMAIN.nz - 1, Math.max(1, zCenter))
-    : DOMAIN.nz / 2;
+    ? Math.min(nz - 1, Math.max(1, zCenter))
+    : nz / 2;
   const hw = Number.isFinite(halfWidth)
     ? Math.min(
         SMOKE_HALF_WIDTH_MAX,
@@ -172,6 +204,10 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     SMOKE_HISTORY_DEFAULT,
   );
   const [heatmapEnabled, setHeatmapEnabledState] = useState(true);
+  const [quality, setQualityState] = useState<QualityLevel>(() =>
+    loadStoredQuality(),
+  );
+  const [autoProbed, setAutoProbed] = useState(false);
   const [particlesVisible, setParticlesVisibleState] = useState(true);
   const [voxelDebugVisible, setVoxelDebugVisibleState] = useState(false);
   const [domainBoxVisible, setDomainBoxVisibleState] = useState(true);
@@ -216,25 +252,62 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
 
   // ── engine lifecycle: init once on mount ──────────────────────────────
   // External-system synchronization (the sanctioned effect use): state sets
-  // below run only after the async engine load resolves.
+  // below run only after the async engine load resolves. First visit (no
+  // stored tier) boots the Low grid, runs the hidden `step(8)` warm-up, and
+  // probes Low vs Medium (F021 §1); repeat visits boot the stored tier
+  // directly and never re-toast.
   useEffect(() => {
     let cancelled = false;
-    void engine
-      .init()
-      .then(() => {
+    void (async () => {
+      try {
+        if (hasStoredQuality()) {
+          const stored = loadStoredQuality();
+          await engine.init({ quality: stored });
+          if (cancelled) return;
+          setQualityState(stored);
+          setParticleCountState(QUALITY_PRESETS[stored].particles);
+        } else {
+          await engine.init({ quality: "low" });
+          if (cancelled) return;
+          let picked: QualityLevel = "medium";
+          try {
+            picked = probeQuality(engine.warmupStepMs());
+          } catch {
+            picked = "medium";
+          }
+          if (picked !== "low") {
+            engine.applyQuality(picked);
+          }
+          storeQuality(picked);
+          if (cancelled) return;
+          setQualityState(picked);
+          setParticleCountState(QUALITY_PRESETS[picked].particles);
+          if (picked === "low") {
+            setAutoProbed(true);
+            pushToast("Quality set to Low for this device.", "info");
+          }
+        }
         if (cancelled) return;
         setAppliedUnstable(engine.getApplied().unstable);
         setConditionsState(engine.getConditions());
         setParticleCountState(engine.getParticleTarget());
+        setSmokeRakeState((prev) =>
+          clampSmokeRake(
+            prev.yCenter,
+            prev.zCenter,
+            prev.halfWidth,
+            engine.getDims(),
+          ),
+        );
         setRunning(engine.isRunning);
         setError(null);
         setReady(true);
-      })
-      .catch(() => {
+      } catch {
         if (cancelled) return;
         setError("Simulation engine failed to load — run `npm run wasm:build`.");
         pushToast("Simulation engine failed to load.", "error");
-      });
+      }
+    })();
     return () => {
       cancelled = true;
     };
@@ -367,6 +440,35 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     [engine],
   );
 
+  const setQuality = useCallback(
+    async (level: QualityLevel): Promise<void> => {
+      if (!isQualityLevel(level)) return;
+      if (level === engine.getQuality()) {
+        setQualityState(level);
+        return;
+      }
+      try {
+        const spec = engine.applyQuality(level);
+        storeQuality(level);
+        setQualityState(level);
+        setParticleCountState(spec.particles);
+        setSmokeRakeState((prev) =>
+          clampSmokeRake(
+            prev.yCenter,
+            prev.zCenter,
+            prev.halfWidth,
+            engine.getDims(),
+          ),
+        );
+        setError(null);
+      } catch {
+        setError("Quality change failed — retry shortly.");
+        pushToast("Quality change failed — engine unavailable.", "error");
+      }
+    },
+    [engine, pushToast],
+  );
+
   const setSmokeEnabled = useCallback((on: boolean) => {
     setSmokeEnabledState(on);
   }, []);
@@ -445,6 +547,9 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
       transport,
       particleCount,
       setParticleCount,
+      quality,
+      setQuality,
+      autoProbed,
       smokeEnabled,
       setSmokeEnabled,
       smokeRake,
@@ -476,6 +581,9 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
       transport,
       particleCount,
       setParticleCount,
+      quality,
+      setQuality,
+      autoProbed,
       smokeEnabled,
       setSmokeEnabled,
       smokeRake,
