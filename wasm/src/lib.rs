@@ -3,6 +3,7 @@ use wasm_bindgen::prelude::*;
 
 mod boundaries;
 mod lbm;
+mod units;
 mod voxel;
 
 /// Shared solver/domain state (F006 skeleton; grown by later features).
@@ -43,6 +44,18 @@ pub struct SimState {
     /// Accumulated measured outlet mass flux (`Σ ρ·u_x` over the interior
     /// outlet face per step).
     pub(crate) mass_out_flux: f64,
+    // ── F009 physical conditions (last `set_conditions` call) ──────────
+    /// Wind speed [m/s] (F012's `q_ref`, F013's conversions).
+    pub(crate) u_mps: f64,
+    /// Air density [kg/m³].
+    pub(crate) rho_phys: f64,
+    /// Physical cell size [m] and timestep [s].
+    pub(crate) dx_phys: f64,
+    pub(crate) dt_phys: f64,
+    /// Reynolds number at the last `set_conditions`.
+    pub(crate) re: f64,
+    /// True when the last conversion did not converge into the τ envelope.
+    pub(crate) conditions_unstable: bool,
 }
 
 impl SimState {
@@ -64,6 +77,12 @@ impl SimState {
             steps: 0,
             mass_in_flux: 0.0,
             mass_out_flux: 0.0,
+            u_mps: 0.0,
+            rho_phys: 0.0,
+            dx_phys: 0.0,
+            dt_phys: 0.0,
+            re: 0.0,
+            conditions_unstable: false,
         }
     }
 
@@ -87,6 +106,12 @@ impl SimState {
             steps: 0,
             mass_in_flux: 0.0,
             mass_out_flux: 0.0,
+            u_mps: 0.0,
+            rho_phys: 0.0,
+            dx_phys: 0.0,
+            dt_phys: 0.0,
+            re: 0.0,
+            conditions_unstable: false,
         };
         lbm::reset_state_flow(&mut s);
         s
@@ -208,12 +233,20 @@ pub fn surface_mode_flag() -> bool {
 
 // ── F007: LBM core ABI ────────────────────────────────────────────────
 
-/// Lattice parameters returned by [`get_lattice_params`] (F007 subset;
-/// F009 grows this struct with `dt`, `dx_phys`, `re`, `unstable`).
+// ── F009: physical conditions ABI ───────────────────────────────────────
+
+/// Lattice + physical parameters, returned by [`set_conditions`] and
+/// [`get_lattice_params`] (ARCHITECTURE.md §5; `rho_phys` added by F009 —
+/// the lattice→Pa conversion needs it — see DECISIONS.md 2026-09-08).
 #[wasm_bindgen]
 pub struct LatticeParams {
     pub(crate) u_lattice: f64,
     pub(crate) tau: f64,
+    pub(crate) dt: f64,
+    pub(crate) dx_phys: f64,
+    pub(crate) re: f64,
+    pub(crate) rho_phys: f64,
+    pub(crate) unstable: bool,
 }
 
 #[wasm_bindgen]
@@ -227,6 +260,32 @@ impl LatticeParams {
     #[wasm_bindgen(getter)]
     pub fn tau(&self) -> f64 {
         self.tau
+    }
+    /// Physical timestep [s].
+    #[wasm_bindgen(getter)]
+    pub fn dt(&self) -> f64 {
+        self.dt
+    }
+    /// Physical cell size [m].
+    #[wasm_bindgen(getter)]
+    pub fn dx_phys(&self) -> f64 {
+        self.dx_phys
+    }
+    /// Reynolds number Re = U·L_char/ν.
+    #[wasm_bindgen(getter)]
+    pub fn re(&self) -> f64 {
+        self.re
+    }
+    /// Air density [kg/m³] used for the conversion.
+    #[wasm_bindgen(getter)]
+    pub fn rho_phys(&self) -> f64 {
+        self.rho_phys
+    }
+    /// True when the τ clamp loop did not converge into the envelope (with
+    /// real air: the normal outcome — see DECISIONS.md 2026-09-08).
+    #[wasm_bindgen(getter)]
+    pub fn unstable(&self) -> bool {
+        self.unstable
     }
 }
 
@@ -306,7 +365,10 @@ pub fn set_lattice_params(u_lattice: f64, tau: f64) {
     });
 }
 
-/// Currently stored `(u_lattice, tau)` after clamping.
+/// Currently stored `(u_lattice, tau)` after clamping, plus the physical
+/// companions from the last [`set_conditions`] call (`dt`/`dx_phys`/`re`/
+/// `rho_phys` are zero until it runs once — F007's u/tau behaviour is
+/// unchanged).
 #[wasm_bindgen]
 pub fn get_lattice_params() -> LatticeParams {
     STATE.with(|s| {
@@ -314,6 +376,60 @@ pub fn get_lattice_params() -> LatticeParams {
         LatticeParams {
             u_lattice: state.u_inlet,
             tau: state.tau,
+            dt: state.dt_phys,
+            dx_phys: state.dx_phys,
+            re: state.re,
+            rho_phys: state.rho_phys,
+            unstable: state.conditions_unstable,
+        }
+    })
+}
+
+/// Compute lattice parameters from physical inputs (pure math in `units.rs`).
+/// Stores τ/u_inlet through F007's envelope clamp plus the physical
+/// companions (U, ρ, Δx, Δt, Re, unstable flag) that F012/F013 consume, and
+/// returns them. Safe to call before or after `set_mesh` — or before
+/// `init_sim` (nx is then 0, so the result is `unstable` + zeroed). Never
+/// panics, even for NaN inputs (→ zeroed params with `unstable: true`).
+/// Domain length default 1.0 m is JS's responsibility (F018 UI constant).
+#[wasm_bindgen]
+pub fn set_conditions(
+    u_mps: f64,
+    pressure_kpa: f64,
+    viscosity_pas: f64,
+    domain_length_m: f64,
+    char_length_m: f64,
+) -> LatticeParams {
+    let cond = units::PhysicalConditions {
+        u_mps,
+        pressure_kpa,
+        viscosity_pas,
+        domain_length_m,
+        char_length_m,
+    };
+    let nx = STATE.with(|s| s.borrow().nx);
+    let p = units::lattice_params(&cond, nx);
+    STATE.with(|s| {
+        let mut state = s.borrow_mut();
+        let (u, t) = clamp_lattice_params(p.u_lattice, p.tau);
+        state.u_inlet = u;
+        state.tau = t;
+        state.u_mps = if cond.u_mps.is_finite() { cond.u_mps } else { 0.0 };
+        state.rho_phys = p.rho_phys;
+        state.dx_phys = p.dx_phys;
+        state.dt_phys = p.dt;
+        state.re = p.re;
+        state.conditions_unstable = p.unstable;
+        // Returned u/tau are the stored (envelope-clamped) values, so the
+        // return always agrees with a subsequent `get_lattice_params()`.
+        LatticeParams {
+            u_lattice: u,
+            tau: t,
+            dt: p.dt,
+            dx_phys: p.dx_phys,
+            re: p.re,
+            rho_phys: p.rho_phys,
+            unstable: p.unstable,
         }
     })
 }
@@ -321,6 +437,40 @@ pub fn get_lattice_params() -> LatticeParams {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `set_conditions` stores (envelope-clamped) params and returns values
+    /// agreeing with `get_lattice_params()`; F012/F013 companions are kept.
+    #[test]
+    fn set_conditions_stores_and_returns_params() {
+        init_sim(128, 48, 48, 0);
+        let p = set_conditions(15.0, 101.325, 1.81e-5, 1.0, 0.25);
+        // Real air never converges into the τ envelope (DECISIONS.md
+        // 2026-09-08): best-effort clamped values + unstable flag.
+        assert!(p.unstable());
+        assert!((p.u_lattice() - 0.07372881355932204).abs() < 1e-12);
+        assert_eq!(p.tau(), 0.505);
+        assert!((p.rho_phys() - 1.2041183164).abs() < 1e-9);
+        let q = get_lattice_params();
+        assert_eq!(q.u_lattice(), p.u_lattice());
+        assert_eq!(q.tau(), p.tau());
+        assert_eq!(q.unstable(), p.unstable());
+        STATE.with(|s| {
+            let state = s.borrow();
+            assert_eq!(state.u_inlet, p.u_lattice());
+            assert_eq!(state.tau, p.tau());
+            assert_eq!(state.u_mps, 15.0);
+            assert_eq!(state.rho_phys, p.rho_phys());
+            assert_eq!(state.dx_phys, p.dx_phys());
+            assert_eq!(state.dt_phys, p.dt());
+            assert_eq!(state.re, p.re());
+        });
+        // NaN input: zeroed + unstable, no panic, state stays usable.
+        let bad = set_conditions(f64::NAN, 101.325, 1.81e-5, 1.0, 0.25);
+        assert!(bad.unstable());
+        assert_eq!(bad.dt(), 0.0);
+        step(1);
+        assert_eq!(steps_done(), 1);
+    }
 
     /// `set_mesh` rejects malformed input without panicking and the state
     /// stays usable for subsequent calls.

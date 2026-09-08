@@ -9,7 +9,7 @@
 | Size | S |
 | Skill fit | `logic` |
 | Depends on | F003 (ABI exists); consumed by F010/F012/F013/F018 |
-| Status | `[ ]` todo |
+| Status | `[x]` done (2026-09-08; two criteria unticked with notes below + DECISIONS.md) |
 
 ## Goal
 
@@ -88,22 +88,36 @@ wasm/src/lib.rs       (modify) — set_conditions export + SimState param storag
 
 ## Acceptance criteria
 
-- [ ] `air_density_at_sea_level`: 101.325 kPa → 1.2041 ± 0.0005 kg/m³.
+- [x] `air_density_at_sea_level`: 101.325 kPa → 1.2041 ± 0.0005 kg/m³.
+      (Verified: 1.2041183.)
 - [ ] `kinematic_viscosity_default_air`: μ=1.81e-5, P=101.325 kPa → ν = 1.5057e-5
-      ± 1e-9.
+      ± 1e-9. **NOT MET AS PRINTED** — true value for the stated inputs is
+      ν = 1.5031745e-5 (off by 2.5e-8; the print matches μ≈1.813e-5). Test
+      asserts the true literal; see DECISIONS.md 2026-09-08 §4a.
 - [ ] `default_conditions_produce_stable_params`: U=15, defaults, nx=128 → τ ∈
       [0.505, 0.95], u_lattice ≤ 0.15, unstable=false, and τ matches the manual
       computation of the §4 formulas within 1e-6 (test contains the explicit
       expected numbers, computed by hand and written into the test).
-- [ ] `high_speed_clamps_to_envelope`: U=60 m/s, if τ would exceed 0.95 → result
+      **PARTIALLY MET** — τ = 0.505 ∈ envelope ✓, u = 0.0737288 ≤ 0.15 ✓,
+      hand-computed dt/dx/Re literals match ✓, but `unstable` is **true**:
+      §4 direct τ ≈ 0.500028 can never reach the 0.505 floor within 8 ×1.5
+      iterations for real air (see DECISIONS.md 2026-09-08 §2).
+- [x] `high_speed_clamps_to_envelope`: U=60 m/s, if τ would exceed 0.95 → result
       τ ≤ 0.95, u_lattice reduced, unstable=false when the clamp loop converged.
-- [ ] `extreme_pressure_unstable_flag`: P=50 kPa with u=60, μ=0.5e-5 → either
+      (Verified via μ = 1.0 Pa·s at U = 60, which the conditional permits:
+      τ 1.297 → 0.8986, u 0.15 → 0.075, unstable=false; plus a physical-μ
+      U = 60 case documenting the low-side outcome.)
+- [x] `extreme_pressure_unstable_flag`: P=50 kPa with u=60, μ=0.5e-5 → either
       converges or returns `unstable=true`; never panics; τ within [0.505, 0.95].
-- [ ] `reynolds_sphere_15ms`: char_length 0.25 m, U=15, defaults →
-      Re = 15×0.25/1.5057e-5 ≈ 2.49e5 ± 1%.
-- [ ] `pressure_conversion_round_trip`: p_rel → Pa at default params for
+      (Verified: unstable=true, τ = 0.505.)
+- [x] `reynolds_sphere_15ms`: char_length 0.25 m, U=15, defaults →
+      Re = 15×0.25/1.5057e-5 ≈ 2.49e5 ± 1%. (Verified: Re = 249472.03.)
+- [x] `pressure_conversion_round_trip`: p_rel → Pa at default params for
       ρ_lattice_rel = 0.01 → 166.7 Pa ± 1 Pa (show the arithmetic in a comment).
-- [ ] `velocity_round_trip`: identity within 1e-9 relative for 20 sample speeds.
+      (Verified: 166.133 Pa; arithmetic in `units.rs` test comment. Requires the
+      ARCHITECTURE-anchor u — the spec's printed u-formula gives 298.5 Pa;
+      see DECISIONS.md 2026-09-08 §1.)
+- [x] `velocity_round_trip`: identity within 1e-9 relative for 20 sample speeds.
 
 ## Test plan
 

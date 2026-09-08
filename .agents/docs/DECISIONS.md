@@ -196,3 +196,68 @@ stay consistent with `ARCHITECTURE.md`.
    whose spec explicitly owns `set_conditions → LatticeParams` and instructs
    "update §5 in the same commit if field names drift" — reconcile §5 then.
    `wasm-pack` regenerates cleanly and `WasmProbe` still bundles (see below).
+
+## 2026-09-08 — F009 (physical ↔ lattice units mapping)
+
+The F009 spec's algorithm (§2) is implemented faithfully, but validating its
+acceptance literals against ARCHITECTURE.md §3/§4 with real air physics exposed
+four conflicts. All numbers below were verified with an independent Python
+computation before writing any Rust (R = 287.05, T = 293.15 fixed):
+
+1. **`u_lattice` start anchors: ARCHITECTURE's 0.05–0.15 wins over the spec's
+   printed formula.** The spec prints
+   `min(0.10, max(0.03, u_mps/60.0 × 0.10 + 0.03))` (0.0317 at 1 m/s, capped
+   0.10), but ARCHITECTURE.md §4 — the binding contract — says "target
+   0.05–0.15, clamped ≤ 0.15", and the spec's own `pressure_conversion_round_trip`
+   criterion (0.01 → 166.7 ± 1 Pa at defaults) *requires* u(15 m/s) ≈ 0.0737:
+   the printed formula gives u = 0.055 → 298.5 Pa (132 Pa off), while linear
+   interpolation of ARCHITECTURE's anchors,
+   `u0 = 0.05 + (U−1) × 0.10/59` (0.05@1 → 0.15@60, clamped to [0.03, 0.15]),
+   gives u = 0.0737288136 → 166.13 Pa (0.57 Pa off, inside ±1).
+   Implemented the ARCHITECTURE-consistent interpolation.
+2. **Real air can never reach τ ≥ 0.505 at metre scale, so `unstable: true` is
+   the *normal* outcome, not an exception.** τ − 0.5 = 3νu/(Δx·U); at defaults
+   (15 m/s, 101.325 kPa, μ = 1.81e-5, L = 1.0 m, nx = 128) the §4 direct value
+   is τ ≈ 0.50002837 — needing ~176× growth in u to hit the 0.505 floor. The
+   spec's ×1.5 low-side loop gains at most 1.5⁸ ≈ 25.6× in 8 iterations, so it
+   *always* exhausts without converging for every input in the UI envelope.
+   Consequences: `default_conditions_produce_stable_params` cannot yield
+   `unstable: false` (criterion left unticked in the spec); on non-convergence
+   the implementation returns the *starting* u (already inside [0.03, 0.15],
+   keeping (u, dt, c) self-consistent — clamping the loop's final 25.6×-inflated
+   u to 0.15 would break the pressure criterion: 40.1 Pa instead of 166.1 Pa),
+   τ clamped to the envelope floor 0.505, `unstable: true`. Downstream
+   (F018/F019) must therefore treat clamped τ = 0.505 + `unstable: true` as the
+   normal toy operating point (the roadmap risk register already routes this to
+   "τ clamping, auto-throttle + soft restart"). The τ > 0.95 halving branch is
+   unreachable with physical viscosities; the `high_speed_clamps_to_envelope`
+   test exercises it with a finite non-physical μ = 1.0 Pa·s at U = 60
+   (τ: 1.297 → 0.899, u: 0.15 → 0.075, converges), which the criterion's
+   conditional phrasing permits, plus a physical-μ U = 60 case documenting the
+   actual low-side behaviour.
+3. **`LatticeParams` carries `rho_phys` (7th field, §5 updated).** Item 3's
+   formula `p = (1/3)·ρ_rel·ρ_phys·c²` needs ρ_phys, but the specified
+   `pressure_lattice_to_pa(rho_rel, p: &LatticeParams)` signature provides only
+   `&LatticeParams` — and the module must stay pure (no SimState, no globals).
+   Smallest consistent change: store ρ_phys in the pure struct; the ABI struct
+   mirrors it (7 getters). F012 (`q_ref = ½ρU²`) and F013 (force conversion)
+   need the stored ρ_phys/U anyway, so `SimState` also retains
+   `u_mps/rho_phys/dx_phys/dt_phys/re/conditions_unstable` from the last
+   `set_conditions` call (additive fields; τ/u_inlet still go through F007's
+   clamp helper as the spec requires). `get_lattice_params` now returns the
+   full struct (stored values; zeros for dt/dx/re/ρ until `set_conditions`
+   runs — F007's u/tau behaviour unchanged).
+4. **Two printed hand-numbers don't match their own stated inputs.**
+   (a) `kinematic_viscosity_default_air`: μ = 1.81e-5 / ρ = 1.204118316 gives
+   ν = 1.503174543e-5, not the printed 1.5057e-5 (off by 2.5e-8, exceeding the
+   ±1e-9 tolerance; the print matches μ ≈ 1.813e-5). The test asserts the true
+   literal tightly and additionally asserts it differs from the print, so a
+   future "fix" to the wrong literal fails loudly. Criterion unticked.
+   (b) `pressure_conversion_round_trip`: true value 166.133 Pa vs printed
+   166.7 Pa (author's rounded intermediates; inside the ±1 Pa tolerance, so the
+   criterion is ticked with the arithmetic shown in the test comment).
+
+Observed values: ρ(101.325 kPa) = 1.204118316 kg/m³; ν = 1.503174543e-5 m²/s;
+default lattice triple (U = 15, nx = 128): u = 0.0737288136,
+dt = 3.840042373e-05 s, τ_direct = 0.5000283718 → reported τ = 0.505
+(clamped), Re = 249472.03.

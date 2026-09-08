@@ -44,7 +44,7 @@ F003 and can proceed while Phase 1 UI work happens.
 
 - [x] [F007 — LBM D3Q19 core step](features/F007-lbm-core.md) — `M` `Rust`
 - [x] [F008 — Boundary conditions (inlet/outlet/obstacles)](features/F008-boundary-conditions.md) — `M` `Rust`
-- [ ] [F009 — Physical ↔ lattice units mapping](features/F009-units-mapping.md) — `S` `logic`
+- [x] [F009 — Physical ↔ lattice units mapping](features/F009-units-mapping.md) — `S` `logic`
 - [ ] [F010 — Step driver, stability & perf budget](features/F010-step-driver.md) — `S` `Rust`
 
 ### Phase 3 — Data Extraction (Rust)

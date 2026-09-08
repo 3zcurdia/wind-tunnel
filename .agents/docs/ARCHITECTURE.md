@@ -161,7 +161,11 @@ nothing in this ABI may be called per-particle or per-cell in a loop from JS.
 init_sim(nx: u32, ny: u32, nz: u32, particle_capacity: u32)
 
 /// Compute lattice parameters from physical inputs. Pure function.
-/// Returns (u_lattice, tau, dt, dx_phys, re, unstable_flag) as a plain object.
+/// Returns LatticeParams { u_lattice, tau, dt, dx_phys, re, rho_phys,
+/// unstable } as a plain object (F009: `rho_phys` added — the lattice→Pa
+/// conversion needs it; `unstable` true when the τ clamp loop did not
+/// converge, which with real air is the normal outcome — see DECISIONS.md
+/// 2026-09-08; `SimState` also retains U/ρ/Δx/Δt/Re for F012/F013).
 set_conditions(u_mps: f64, pressure_kpa: f64, viscosity_pas: f64,
                domain_length_m: f64, char_length_m: f64) -> LatticeParams
 
@@ -172,6 +176,16 @@ clear_mesh()
 
 /// Re-initialize the flow field to uniform inlet conditions (keeps the mesh).
 reset_flow()
+
+/// Completed timesteps since the last reset_flow / init_sim (F007).
+steps_done() -> u64
+/// Store lattice params, clamped to the §3 envelope (u ≤ 0.15,
+/// τ ∈ [0.505, 0.95]); read back via get_lattice_params (F007; F009 drives it).
+set_lattice_params(u_lattice: f64, tau: f64)
+get_lattice_params() -> LatticeParams
+/// Accumulated [inlet, outlet] mass flux since reset_flow, lattice units
+/// (F008 TEMPORARY diagnostic; replaced by stats() in F013).
+mass_balance() -> Vec<f64>              // len 2
 
 // ── simulation ───────────────────────────────────────────────────────────
 /// Advance exactly n lattice steps.
