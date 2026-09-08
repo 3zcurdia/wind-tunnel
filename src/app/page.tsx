@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { SampleGallery } from "@/components/controls/SampleGallery";
 import { UploadPanel } from "@/components/controls/UploadPanel";
 import { ControlPanel } from "@/components/controls/ControlPanel";
 import { StatsPanel } from "@/components/controls/StatsPanel";
@@ -164,11 +165,12 @@ function ContextLostOverlay() {
 
 function ControlsRail() {
   const sim = useSimulationContext();
-  const { file, meta } = useModel();
-  const hasModel = file !== null && meta !== undefined;
+  const { file, sample, meta } = useModel();
+  const hasModel = (file !== null || sample !== null) && meta !== undefined;
 
   return (
     <div className="w-80 shrink-0 space-y-4 overflow-y-auto pr-1">
+      <SampleGallery />
       <UploadPanel />
       <ControlPanel
         conditions={sim.conditions}

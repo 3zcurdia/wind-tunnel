@@ -6,6 +6,10 @@ import type { SceneManager } from "@/components/viewport/SceneManager";
 import { getSceneManager } from "@/components/viewport/viewportBridge";
 import { parseModel, type ParsedModel } from "@/lib/mesh/loadModel";
 import {
+  buildSampleGeometry,
+  sampleDisplayName,
+} from "@/lib/mesh/samples";
+import {
   normalizeToDomain,
   type NormalizedModel,
 } from "@/lib/mesh/normalize";
@@ -86,7 +90,7 @@ function waitForSceneManager(signal: { cancelled: boolean }): Promise<SceneManag
  */
 export function useSimulation(): void {
   const sim = useSimulationContext();
-  const { file, setMeta, setParseError } = useModel();
+  const { file, sample, setMeta, setParseError } = useModel();
   const {
     getEngine,
     notifyRecovery,
@@ -347,9 +351,11 @@ export function useSimulation(): void {
 
   // ── model pipeline (the F005 file→scene pipeline, absorbed here) ───────
   // parse → normalize → engine.setMesh → showModel → meta → resetFlow →
-  // play(). Parse failures surface as the context error state + toast and
-  // leave the previous 3D model and voxel mesh untouched. Stale files
-  // (superseded uploads) are ignored via the cancel flag.
+  // play(). F023 converges the sample path here: `buildSampleGeometry`
+  // replaces `parseModel` as the geometry producer, and both meet at
+  // "normalized geometry ready". Parse failures surface as the context error
+  // state + toast and leave the previous 3D model and voxel mesh untouched.
+  // Stale files (superseded uploads) are ignored via the cancel flag.
   useEffect(() => {
     const signal = { cancelled: false };
     const engine = getEngine();
@@ -362,7 +368,9 @@ export function useSimulation(): void {
       }
       if (signal.cancelled) return;
 
-      if (!file) {
+      // `file` and `sample` are mutually exclusive in ModelContext (latest
+      // wins); both null means the empty-tunnel state.
+      if (!file && !sample) {
         getSceneManager()?.clearModel();
         try {
           engine.clearMesh();
@@ -382,15 +390,45 @@ export function useSimulation(): void {
       if (signal.cancelled || !manager) return;
 
       let parsed: ParsedModel | null = null;
+      let built: BufferGeometry | null = null;
       let normalized: NormalizedModel | null = null;
+      let sourceName = "model";
       try {
-        const result = await parseModel(file);
-        if (signal.cancelled) {
-          result.geometry.dispose();
-          return;
+        let source: BufferGeometry;
+        let triangles: number;
+        let vertices: number;
+        if (file) {
+          const result = await parseModel(file);
+          if (signal.cancelled) {
+            result.geometry.dispose();
+            return;
+          }
+          parsed = result;
+          source = result.geometry;
+          sourceName = file.name;
+          triangles = result.triangles;
+          vertices = result.vertices;
+        } else {
+          // F023 sample path: `sample` is non-null here (both-null returned
+          // above); the guard keeps strict narrowing honest.
+          if (!sample) return;
+          const geometry = buildSampleGeometry(sample);
+          if (signal.cancelled) {
+            geometry.dispose();
+            return;
+          }
+          built = geometry;
+          source = geometry;
+          sourceName = sampleDisplayName(sample);
+          const position = geometry.getAttribute("position");
+          vertices = position?.count ?? 0;
+          const index = geometry.getIndex();
+          triangles =
+            index !== null
+              ? Math.floor(index.count / 3)
+              : Math.floor(vertices / 3);
         }
-        parsed = result;
-        const mapped = normalizeToDomain(result.geometry, engine.getDims());
+        const mapped = normalizeToDomain(source, engine.getDims());
         if (signal.cancelled) {
           mapped.geometry.dispose();
           return;
@@ -402,7 +440,7 @@ export function useSimulation(): void {
         if (signal.cancelled) return;
         manager.showModel(mapped.geometry);
         if (signal.cancelled) return;
-        setMeta({ triangles: result.triangles, vertices: result.vertices });
+        setMeta({ triangles, vertices });
         engine.resetFlow();
         engine.play();
         syncRunning();
@@ -410,18 +448,19 @@ export function useSimulation(): void {
         if (signal.cancelled) return;
         const message = err instanceof Error ? err.message : "Failed to parse model";
         setParseError(message);
-        pushToast(`Failed to parse ${file.name}.`, "error");
+        pushToast(`Failed to parse ${sourceName}.`, "error");
       } finally {
-        // `normalizeToDomain` clones its input, so both copies are owned
-        // here and both are released (the scene and the engine hold their
-        // own clones/copies by now).
+        // `normalizeToDomain` clones its input, so every copy here is owned
+        // locally and released (the scene and the engine hold their own
+        // clones/copies by now).
         normalized?.geometry.dispose();
         parsed?.geometry.dispose();
+        built?.dispose();
       }
     })();
 
     return () => {
       signal.cancelled = true;
     };
-  }, [file, getEngine, setMeta, setParseError, pushToast, syncRunning]);
+  }, [file, sample, getEngine, setMeta, setParseError, pushToast, syncRunning]);
 }

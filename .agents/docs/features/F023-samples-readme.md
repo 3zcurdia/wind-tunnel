@@ -9,7 +9,7 @@
 | Size | S |
 | Skill fit | `docs` |
 | Depends on | F019 (pipeline), F022 (error paths stable) |
-| Status | `[ ]` todo |
+| Status | `[x]` done (2026-09-08; code + headless verification done, 5 visual/browser criteria need a browser — see notes) |
 
 ## Goal
 
@@ -101,23 +101,46 @@ README.md                                 (rewrite)
 - [ ] Fresh clone + README quick-start commands → running app (Rust prerequisite
       steps are accurate — follow them literally on a clean machine or careful
       simulation of one).
+      **NOT VERIFIED HERE — needs a clean machine:** the commands match the
+      pinned toolchain (`wasm-pack build wasm --target web --out-dir ../src/wasm`
+      per `package.json`) and the verified F003 pipeline by inspection; no
+      clean-clone run was performed in this environment.
 - [ ] Each sample flows immediately when clicked: sphere shows the classic
       stagnation/wake heatmap; cube shows strong separation; teardrop shows
       smoother attached flow with lower cd than the cube (read from stats panel —
       teardrop cd < cube cd at defaults).
+      **NOT VERIFIABLE HEADLESS — needs a browser** (pipeline wiring is per
+      spec: sample → normalize → `setMesh` → `resetFlow` → `play()` through the
+      single `useSimulation` effect; heatmap/Cd readouts need live rendering).
 - [ ] Sample ↔ upload interplay: uploading after a sample replaces it; samples
       gallery deselects on upload; no stale geometry (swap 6× fast — no crash).
+      **NOT VERIFIABLE HEADLESS — needs a browser** (mutual exclusivity holds
+      by construction: `setFile` clears `sample`, `loadSample` clears `file`
+      and bumps the generation guard so in-flight reads are abandoned).
 - [ ] Teardrop is visually car-ish and nose-upstream (wind from left hits the
       rounded end).
-- [ ] README renders correctly on GitHub (tables, anchors); no leftover
+      **GEOMETRY VERIFIED, aesthetics need a browser:** headless probe confirms
+      long axis = X (1.0 vs 0.5 diameter), nose pole at −X (upstream, wind
+      blows +X), closed poles, 64×48 lathe resolution; "car-ish" is a human
+      visual call.
+- [x] README renders correctly on GitHub (tables, anchors); no leftover
       create-next-app text.
+      (Verified 2026-09-08 by inspection: single `## Troubleshooting` heading
+      → `#troubleshooting` anchor, tables/commands intact, no scaffold text;
+      only change from the pre-existing draft is the WebGL2 browser list.)
 - [ ] Demo script in ROADMAP is followable step-by-step (a person who has never
       seen the app completes it in < 3 minutes).
+      **WRITTEN, NOT USER-TESTED:** the 10-step appendix follows the shipped UI
+      order (samples → stats → sliders → toolbar → presets → upload); no fresh
+      person has timed it.
 
 ## Test plan
 
 - Unit (`samples.ts`): each geometry has > 0 vertices, finite bbox, index
   divisible by 3, teardrop long-axis = X.
+  (Verified 2026-09-08: headless node probe imports the real module — all
+  three geometries pass every check, plus a `normalizeToDomain` smoke check
+  on each sample.)
 - Manual: all criteria; follow the demo script verbatim as written.
 
 ## Out of scope

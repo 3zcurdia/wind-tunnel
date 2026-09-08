@@ -70,7 +70,7 @@ F003 and can proceed while Phase 1 UI work happens.
 
 - [x] [F021 — Quality presets (low/medium/high)](features/F021-quality-presets.md) — `S` `logic` (2026-09-08; code + headless verification done, 4 visual/browser criteria need a browser — see spec notes)
 - [x] [F022 — Edge cases & error handling](features/F022-edge-cases.md) — `M` `logic` (2026-09-08; code + headless verification done, 5 manual/browser criteria need a browser — see spec notes)
-- [ ] [F023 — Built-in sample models + README](features/F023-samples-readme.md) — `S` `docs`
+- [x] [F023 — Built-in sample models + README](features/F023-samples-readme.md) — `S` `docs` (2026-09-08; code + headless verification done, 5 visual/browser criteria need a browser — see spec notes)
 
 ---
 
@@ -125,3 +125,31 @@ Practical reading:
 Never edit another feature's spec. If you find a conflict between specs, stop and
 record it in `.agents/docs/DECISIONS.md` (create if missing) instead of silently
 deviating.
+
+---
+
+## Appendix — Demo script (F023)
+
+A 10-step click-path for presenting the app. A person who has never seen the
+app should complete it in under 3 minutes.
+
+1. Open the app and wait for "Loading engine…" to clear — the empty tunnel
+   already flows with particles.
+2. In the **Samples** panel, click **Sphere** — the model appears and flow
+   starts developing around it within seconds.
+3. Watch the surface heatmap: red stagnation zone on the upstream face, cooler
+   wake behind — the classic wind-tunnel look.
+4. Read the stats bar: note the drag coefficient (Cd) once it settles (the
+   `—` placeholder clears after ~200 steps).
+5. Click **Cube** — separation is visibly stronger and the settled Cd reads
+   higher than the sphere's.
+6. Click **Teardrop** (rounded nose faces left, into the wind) — flow stays
+   attached and the settled Cd reads lower than the cube's.
+7. Drag the **wind speed** slider up — particles accelerate and stats respond
+   live; drag it back down to recover calm flow.
+8. Toggle layers from the viewport toolbar: particles, smoke, heatmap, and
+   the voxel debug view on/off.
+9. Switch the quality preset to **Low** and back — the tunnel rebuilds and
+   flow resumes without a reload.
+10. Drop any `.obj` / `.ply` file (≤ 50 MB) onto the Model panel — the gallery
+    deselects, your model swaps in, and the tunnel keeps running.

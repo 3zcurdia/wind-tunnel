@@ -86,8 +86,9 @@ zero-copy typed-array ABI.
   (see prerequisites) and run `npm run wasm:build`.
 - **`wasm-pack: command not found`** — install it: `cargo install wasm-pack`
   (or `brew install wasm-pack` on macOS).
-- **Blank viewport / WebGL errors** — this app needs WebGL2. Update your browser,
-  and make sure hardware acceleration is enabled in browser settings.
+- **Blank viewport / WebGL errors** — this app needs WebGL2 (current Chrome,
+  Edge, Firefox, or Safari). Update your browser, and make sure hardware
+  acceleration is enabled in browser settings.
 - **Low framerate** — switch the quality preset to Low; close other WebGL tabs.
 - **Upload rejected** — only `.obj` / `.ply` ≤ 50 MB are accepted; check the file
   extension and size.
