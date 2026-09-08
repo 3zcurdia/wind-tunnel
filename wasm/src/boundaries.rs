@@ -110,15 +110,24 @@ fn state_ok(state: &SimState) -> Option<usize> {
 /// Fluid-side full-way bounce-back (see module docs). Skips solid cells;
 /// out-of-bounds neighbors are not solid (walls handle the domain edge).
 /// No allocation: two small stack arrays per solid-adjacent fluid cell only.
-pub(crate) fn apply_obstacle_bounce_back(state: &mut SimState) {
+///
+/// F013 drag hook: returns the per-step lattice drag force `F_lat` — the
+/// x-momentum exchange summed over every reflecting link,
+/// `Σ (f[i] + f[rev(i)]) · e_x[i]` from the pre-bounce snapshot (see
+/// `crate::stats` for the EMA + physical conversion). The accumulation is
+/// branch-free inside the link loop (the `e_x == 0` links contribute exactly
+/// 0 via the multiply). Non-finite populations propagate into the sum; the
+/// EMA update in [`apply_all`] guards against poisoning.
+pub(crate) fn apply_obstacle_bounce_back(state: &mut SimState) -> f64 {
     let n = match state_ok(state) {
         Some(n) => n,
-        None => return,
+        None => return 0.0,
     };
     let (nx, ny, nz) = (state.nx, state.ny, state.nz);
     let nx_i = nx as i32;
     let ny_i = ny as i32;
     let nz_i = nz as i32;
+    let mut drag_lat_step = 0.0f64;
     for z in 0..nz {
         for y in 0..ny {
             for x in 0..nx {
@@ -159,12 +168,18 @@ pub(crate) fn apply_obstacle_bounce_back(state: &mut SimState) {
                     let nb = idx(sx as usize, sy as usize, sz as usize, nx, ny);
                     if state.occupancy[nb] != 0 {
                         let r = REVERSE[i];
+                        // F013: x-momentum exchange for this reflecting link,
+                        // from the pre-bounce snapshot. Branch-free: links
+                        // with `e_x == 0` contribute exactly 0.
+                        drag_lat_step +=
+                            (snap[i] as f64 + snap[r] as f64) * EX[i] as f64;
                         state.f[r * n + c] = snap[i];
                     }
                 }
             }
         }
     }
+    drag_lat_step
 }
 
 // ── Inlet ───────────────────────────────────────────────────────────
@@ -317,8 +332,22 @@ pub(crate) fn apply_walls(state: &mut SimState) {
 }
 
 /// Full per-step BC pass in fixed order: bounce-back → inlet → outlet → walls.
+///
+/// F013: folds the bounce-back drag sum into `state.drag_lat_ema`
+/// (EMA, α = [`crate::stats::DRAG_EMA_ALPHA`]) here so `lbm.rs` stays
+/// untouched (F013's file list excludes it). Non-finite step sums never touch
+/// the EMA (they would poison every future `stats()` read); `stable` is left
+/// alone — stability is F010's business.
 pub(crate) fn apply_all(state: &mut SimState) {
-    apply_obstacle_bounce_back(state);
+    let step = apply_obstacle_bounce_back(state);
+    if step.is_finite() {
+        let base = if state.drag_lat_ema.is_finite() {
+            state.drag_lat_ema
+        } else {
+            0.0
+        };
+        state.drag_lat_ema = base + crate::stats::DRAG_EMA_ALPHA * (step - base);
+    }
     apply_inlet(state);
     apply_outlet(state);
     apply_walls(state);

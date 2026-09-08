@@ -183,9 +183,6 @@ steps_done() -> u64
 /// τ ∈ [0.505, 0.95]); read back via get_lattice_params (F007; F009 drives it).
 set_lattice_params(u_lattice: f64, tau: f64)
 get_lattice_params() -> LatticeParams
-/// Accumulated [inlet, outlet] mass flux since reset_flow, lattice units
-/// (F008 TEMPORARY diagnostic; replaced by stats() in F013).
-mass_balance() -> Vec<f64>              // len 2
 
 // ── simulation ───────────────────────────────────────────────────────────
 /// Advance exactly n lattice steps (clamped to ≤ 64 per call, F010).
@@ -234,7 +231,12 @@ advect_particles(dt_lattice: f32)
 /// Aggregated stats; cheap enough to call at ~4 Hz from JS.
 stats() -> StatsRecord
 // StatsRecord { cd: f64, drag_n: f64, p_min_pa: f64, p_max_pa: f64,
-//               re: f64, steps: u64, active_particles: u32, stable: bool }
+//               re: f64, steps: u64, active_particles: u32, stable: bool,
+//               mass_in: f64, mass_out: f64 }
+//             (mass_in/out: cumulative inlet/outlet flux since reset_flow,
+//             lattice units — F008's counters, surfaced by F013 which removed
+//             the temporary mass_balance() diagnostic; cd is −1.0 while fewer
+//             than 200 steps elapsed or no mesh is present)
 ```
 
 **Buffer-view rules (JS side, in `SimEngine`):**

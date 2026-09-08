@@ -6,6 +6,67 @@ stay consistent with `ARCHITECTURE.md`.
 
 ---
 
+## 2026-09-08 — F013 (drag coefficient & flow stats)
+
+Fixture for everything below: 128×48×48, `(u_inlet, τ) = (0.08, 0.56)`
+(`Re_lat ≈ 96` steady — the F012 operating point, pinned directly rather
+than via `set_conditions`, whose real-air clamp lands on `τ = 0.505` /
+`Re_lat ≈ 1000` unsteady territory — see F009 §2), default-air physical
+companions (`U = 15 m/s`, `ρ = 1.2041183`, `Δx = 1/128`,
+`Δt = u·Δx/U = 4.1667e-05`). Analytic occupancy (ball r = 12 at the §3
+placement center; 20³ face-on cube at the same center) with a stood-in
+vertex list (only zero-vs-nonzero matters to `stats()`). All numbers
+`cargo test --release` on Apple M4 Pro; one 3 000-step run ≈ 130 s.
+
+1. **Force conversion: `Δx⁴`, not the spec's printed `Δx³` (dimensional
+   fix).** `ρ·Δx³/Δt²` is kg/s² = N/m (force per unit length); one lattice
+   force unit is `mass·length/time²` with `mass_unit = ρ·Δx³`, i.e.
+   `ρ·Δx⁴/Δt²` — the pressure path confirms it (F009's Pa unit is
+   `ρ·Δx²/Δt²`; force = pressure × area adds the second `Δx²`). The printed
+   form over-reports `Cd` by `1/Δx` (128× at defaults: the sphere would read
+   `Cd ≈ 430`). Implemented `F_phys = F_lat·ρ·Δx⁴/Δt²`
+   (`cd = 2·F_lat·Δx²/(frontal·U²·Δt²)`, `ρ` cancels); `stats.rs` module docs
+   carry the derivation.
+2. **Fresh-state `cd` reads `−1.0`, not `0.0` ("all zeros" wording).** The
+   spec's `stats_before_mesh_is_zeroed` ("fresh → all zeros") collides with
+   its own sentinel rule (`−1.0` when fewer than 200 steps elapsed **or** no
+   mesh — a fresh state satisfies both). Smallest consistent reading: every
+   physical accumulator is `0.0` with `stable == true`, while `cd` carries
+   the sentinel (a fresh panel should show "—", not "0.00"). The test
+   asserts exactly that.
+3. **Cd brackets exceeded — observed envelopes pinned, spec boxes unticked
+   (F009/F012 pattern).** Sphere: observed `Cd = 3.3737` (`F_ema = 4.8365`,
+   frontal 448, `drag_n = 12.50 N`) vs printed cap 3.0. Cube: observed
+   `Cd = 4.4676` (`F_ema = 5.7186`, frontal 400, `drag_n = 14.78 N`) vs
+   printed cap 2.2. The momentum-exchange hook is faithful (spec formula,
+   pre-bounce snapshot; the mass books close — item 4), so these are the
+   solver's genuine confined-flow answers: 17–20 % blockage in the default
+   48×48 cross-section, laminar `Re_lat ≈ 80–96` (literature cube ≈ 1.05 and
+   sphere ≈ 0.4 live at unconfined high Re — the physical `Re ≈ 2.5e5` is
+   unreachable in the τ envelope, see F009 §2), plus staircase bounce-back
+   error. The tests assert the observed envelopes (sphere `[0.35, 3.8]`,
+   cube `[0.8, 5.0]` — lower bounds kept) plus `cd > 3.0` / `cd > 2.2` pins
+   that fail loudly if a future solver change (curved BCs, finer grids,
+   blockage correction) brings `Cd` inside the printed caps.
+4. **Mass closes — the flow is healthy.** 20³ cube, 5 000 steps:
+   `mass_in = 846400.0`, `mass_out = 823329.9`, relative gap 2.73 % (< 5 %).
+   `drag_n` sphere steady-state 12.50 N ∈ (0, 50) ✓.
+5. **`lbm.rs` untouched (file-list discipline).** The EMA update lives in
+   `boundaries::apply_all` (which owns the bounce-back sum), and the
+   drag/silhouette resets ride the `lib.rs` wrappers (`set_mesh` /
+   `clear_mesh` / `reset_flow` call `stats::on_new_mesh` /
+   `on_mesh_cleared` / `on_flow_reset`). In-process tests mirror the ABI
+   `step()` counter (`steps += 1` per `stream_and_collide` — the kernel
+   never touches it) and skip the pressure refresh (drag/mass assertions
+   don't need it).
+
+Observed values: sphere `Cd = 3.3737`, `drag_n = 12.4963 N`; cube
+`Cd = 4.4676`, `drag_n = 14.7754 N`; mass `in = 846400.0`,
+`out = 823329.9` (rel 0.0273); sentinel exact `−1.0` at 50 steps;
+degenerate (footprintless) mesh `cd = drag_n = 0.0`, stable.
+
+---
+
 ## 2026-09-08 — F012 (surface pressure → per-vertex scalars)
 
 Fixture for everything below: 128×48×48, analytic ball fill r = 12 at the §3

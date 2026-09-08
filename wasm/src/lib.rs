@@ -8,6 +8,7 @@ mod bench;
 mod lbm;
 mod particles;
 mod pressure;
+mod stats;
 mod units;
 mod voxel;
 
@@ -31,6 +32,10 @@ mod voxel;
 /// `set_mesh` / `init_sim`); `rho_mean` is the running mean lattice density
 /// (EMA, α = 0.01); `p_min_pa` / `p_max_pa` / `q_ref_pa` are the F015 legend
 /// anchors.
+/// `frontal_cells` / `drag_lat_ema` are the F013 drag substrate: the yz
+/// silhouette cell count (recomputed once per `set_mesh`) and the
+/// EMA-smoothed (α = 0.05) per-step lattice drag force from the bounce-back
+/// momentum-exchange hook (see `stats.rs` + `boundaries.rs`).
 pub struct SimState {
     pub(crate) nx: usize,
     pub(crate) ny: usize,
@@ -100,6 +105,13 @@ pub struct SimState {
     pub(crate) p_max_pa: f64,
     /// Stagnation reference `½·ρ·U²` [Pa] (zero with no mesh).
     pub(crate) q_ref_pa: f64,
+    // ── F013 drag & stats ────────────────────────────────────────────
+    /// Silhouette cell count (yz-projection of the occupancy grid),
+    /// recomputed once per `set_mesh` (see `stats::frontal_cells`).
+    pub(crate) frontal_cells: usize,
+    /// EMA-smoothed (α = 0.05) per-step lattice drag force from the
+    /// bounce-back momentum-exchange hook (see `stats.rs`).
+    pub(crate) drag_lat_ema: f64,
 }
 
 impl SimState {
@@ -137,6 +149,8 @@ impl SimState {
             p_min_pa: 0.0,
             p_max_pa: 0.0,
             q_ref_pa: 0.0,
+            frontal_cells: 0,
+            drag_lat_ema: 0.0,
         }
     }
 
@@ -176,6 +190,8 @@ impl SimState {
             p_min_pa: 0.0,
             p_max_pa: 0.0,
             q_ref_pa: 0.0,
+            frontal_cells: 0,
+            drag_lat_ema: 0.0,
         };
         lbm::reset_state_flow(&mut s);
         s
@@ -256,6 +272,8 @@ pub fn set_mesh(triangles: &[f32]) -> u32 {
         state.vertex_cell = mapping;
         state.vertex_pressure = vec![0.0f32; state.vertex_count];
         pressure::on_new_mesh(&mut state);
+        // F013: silhouette + drag-average restart for the new geometry.
+        stats::on_new_mesh(&mut state);
         lbm::retune_solid_cells(&mut state, &to_fluid);
         state.solid_count as u32
     })
@@ -281,6 +299,8 @@ pub fn clear_mesh() {
         // F012: no mesh ⇒ zeroed pressure state (the `empty_mesh_safe`
         // contract — `pressure_anchors()` reads all zeros).
         pressure::on_mesh_cleared(&mut state);
+        // F013: no mesh ⇒ zero silhouette + zero drag.
+        stats::on_mesh_cleared(&mut state);
         lbm::retune_solid_cells(&mut state, &to_fluid);
     });
 }
@@ -402,6 +422,7 @@ pub fn reset_flow() {
         let mut state = s.borrow_mut();
         lbm::reset_state_flow(&mut state);
         pressure::on_flow_reset(&mut state);
+        stats::on_flow_reset(&mut state);
     });
 }
 
@@ -540,14 +561,103 @@ pub fn steps_done() -> u64 {
     STATE.with(|s| s.borrow().steps)
 }
 
-/// Accumulated inlet/outlet mass flux since the last `reset_flow`, as
-/// `[mass_in, mass_out]` (lattice units). Temporary diagnostic shape — F013
-/// replaces it with the full `StatsRecord`. Never panics.
+// ── F013: drag coefficient & flow stats ─────────────────────────────────
+// The F008 `mass_balance()` diagnostic is gone (replaced by the `mass_in` /
+// `mass_out` fields below); the accumulators themselves (`mass_in_flux` /
+// `mass_out_flux` in `boundaries.rs`) are kept and surfaced here.
+
+/// Aggregated flow stats (ARCHITECTURE.md §5): time-averaged drag
+/// coefficient + drag force, F012 pressure anchors, Reynolds number, step
+/// count, live particle count, stability latch, and cumulative inlet/outlet
+/// mass fluxes. All values are maintained incrementally — this copies them
+/// out (cheap struct, no pointers), safe at ~4 Hz from JS and before any
+/// mesh exists. Never panics.
 #[wasm_bindgen]
-pub fn mass_balance() -> Vec<f64> {
+pub struct StatsRecord {
+    pub(crate) cd: f64,
+    pub(crate) drag_n: f64,
+    pub(crate) p_min_pa: f64,
+    pub(crate) p_max_pa: f64,
+    pub(crate) re: f64,
+    pub(crate) steps: u64,
+    pub(crate) active_particles: u32,
+    pub(crate) stable: bool,
+    pub(crate) mass_in: f64,
+    pub(crate) mass_out: f64,
+}
+
+#[wasm_bindgen]
+impl StatsRecord {
+    /// Time-averaged drag coefficient, or −1.0 ("not yet meaningful": fewer
+    /// than 200 steps since reset or no mesh — F017 renders "—").
+    #[wasm_bindgen(getter)]
+    pub fn cd(&self) -> f64 {
+        self.cd
+    }
+    /// Drag force [N] from the EMA lattice force (0 with no obstacle).
+    #[wasm_bindgen(getter)]
+    pub fn drag_n(&self) -> f64 {
+        self.drag_n
+    }
+    /// Minimum vertex pressure [Pa] (≤ 0 by construction; 0 with no mesh).
+    #[wasm_bindgen(getter)]
+    pub fn p_min_pa(&self) -> f64 {
+        self.p_min_pa
+    }
+    /// Maximum vertex pressure [Pa] (≥ 0 by construction; 0 with no mesh).
+    #[wasm_bindgen(getter)]
+    pub fn p_max_pa(&self) -> f64 {
+        self.p_max_pa
+    }
+    /// Reynolds number from the last `set_conditions` (0 until it runs).
+    #[wasm_bindgen(getter)]
+    pub fn re(&self) -> f64 {
+        self.re
+    }
+    /// Completed timesteps since the last `reset_flow` / `init_sim`.
+    #[wasm_bindgen(getter)]
+    pub fn steps(&self) -> u64 {
+        self.steps
+    }
+    /// Number of currently alive particles.
+    #[wasm_bindgen(getter)]
+    pub fn active_particles(&self) -> u32 {
+        self.active_particles
+    }
+    /// Latched stability flag (F010; `reset_flow` clears it).
+    #[wasm_bindgen(getter)]
+    pub fn stable(&self) -> bool {
+        self.stable
+    }
+    /// Accumulated inlet mass flux since reset (lattice units).
+    #[wasm_bindgen(getter)]
+    pub fn mass_in(&self) -> f64 {
+        self.mass_in
+    }
+    /// Accumulated measured outlet mass flux since reset (lattice units).
+    #[wasm_bindgen(getter)]
+    pub fn mass_out(&self) -> f64 {
+        self.mass_out
+    }
+}
+
+/// Current stats snapshot (see [`StatsRecord`]). Never panics.
+#[wasm_bindgen]
+pub fn stats() -> StatsRecord {
     STATE.with(|s| {
         let state = s.borrow();
-        vec![state.mass_in_flux, state.mass_out_flux]
+        StatsRecord {
+            cd: stats::drag_coefficient(&state),
+            drag_n: stats::drag_force_physical(&state),
+            p_min_pa: state.p_min_pa,
+            p_max_pa: state.p_max_pa,
+            re: state.re,
+            steps: state.steps,
+            active_particles: state.particles.alive() as u32,
+            stable: state.stable,
+            mass_in: state.mass_in_flux,
+            mass_out: state.mass_out_flux,
+        }
     })
 }
 
