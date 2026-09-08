@@ -1,4 +1,4 @@
-//! LBM D3Q19 BGK core step (F007).
+//! LBM D3Q19 BGK core step (F007 kernel, F008 wind-tunnel BCs).
 //!
 //! Algorithm module — intentionally `wasm_bindgen`-free (see CONVENTIONS.md).
 //! Thin ABI exports (`step`, `reset_flow`, …) live in `lib.rs`.
@@ -11,56 +11,58 @@
 //! plane `i` at `f[i·n_cells .. (i+1)·n_cells]`, cell `(x,y,z)` at
 //! `idx = x + nx·(y + ny·z)` (ARCHITECTURE.md §3, x fastest).
 //!
-//! ## Chosen scheme: collide-then-pull-stream, no swap
+//! ## Chosen scheme: collide → pull-stream (non-periodic) → BC pass, no swap
 //!
-//! Per step, two passes over pre-allocated buffers (no allocation):
+//! Per step, two passes over pre-allocated buffers (no allocation) plus the
+//! F008 boundary pass (`boundaries::apply_all`):
 //!
 //! 1. **Collide** (`f` → `f_next`): for every fluid cell, gather `ρ, u` from
 //!    `f`, evaluate the second-order Maxwellian `f_eq`, and write the BGK
 //!    relaxation `f_next = f − (f − f_eq)/τ`. Solid cells are copied through
 //!    (`f_next = f`), i.e. no collision.
-//! 2. **Stream** (`f_next` → `f`, pull): for every direction `i` and every
-//!    fluid destination cell `c`, `f[i][c] = f_next[i][c − e[i]]` with periodic
-//!    wrap on all six faces. Solid destinations are **skipped** (left at their
-//!    previous values) so frozen solids keep acting as momentum sinks.
+//! 2. **Stream** (`f_next` → `f`, pull, non-periodic): for every direction `i`
+//!    and every fluid destination cell `c`, `f[i][c] = f_next[i][c − e[i]]`
+//!    when the source is in-bounds; out-of-bounds sources are **skipped**
+//!    (the destination keeps its previous value — the inlet/outlet/wall BCs
+//!    overwrite the faces right after, so no stale value survives a step).
+//!    Solid destinations are **skipped** (they stay frozen at rest; the
+//!    bounce-back pass overwrites what the fluid side needs).
+//! 3. **Boundaries** (`boundaries::apply_all`): bounce-back → inlet → outlet
+//!    → walls (see `boundaries.rs` for the exact variants and precedence).
 //!
 //! ### Conservation argument
 //!
 //! - *Collision* preserves mass per cell: `Σᵢ f_eq[i] = ρ` by construction of
 //!   the weights, so `Σᵢ f_next[i] = Σᵢ f[i] − (Σᵢf[i] − Σᵢf_eq[i])/τ = ρ`.
 //!   Momentum is relaxed toward equilibrium (intended viscosity), not created.
-//! - *Streaming* is a permutation of values within each plane under periodic
-//!   wrap (every source is read exactly once per destination, destinations
-//!   cover the whole plane), so global `Σρ` is unchanged when no solids are
-//!   present. With solids, fluid mass entering a solid destination is dropped
-//!   and rest-state mass pulled out of solids enters the fluid — the documented
-//!   temporary obstacle model (see below), which is why the mass-conservation
-//!   tests use obstacle-free grids.
-//! - Uniform equilibrium is a fixed point: collide maps `f_eq → f_eq`, and
-//!   pull-streaming a spatially uniform plane yields the same uniform plane.
-//!   Hence rest-state invariance and uniform-flow steadiness hold to `f32`
-//!   rounding.
+//! - *Streaming* is a permutation of values within each plane when no solids
+//!   are present **and** the domain is periodic; with the F008 non-periodic
+//!   edges it is a permutation on the interior, while the faces are
+//!   re-imposed by the inlet/outlet/wall BCs each step. Uniform equilibrium
+//!   at `(1, u_inlet, 0, 0)` is a fixed point: collide maps `f_eq → f_eq`,
+//!   interior pull-streaming preserves uniformity, the inlet rewrites the
+//!   identical equilibrium, the outlet copies identical values, and the wall
+//!   swaps exchange identical mirrored populations (they match when
+//!   `u_y = u_z = 0`). Hence rest-state invariance and uniform-flow steadiness
+//!   hold to `f32` rounding.
+//! - With solids, fluid mass pulled out of solid mirrors is replaced by the
+//!   bounce-back reflection; inlet/outlet exchange mass with the outside so
+//!   global `Σρ` is balanced (in ≈ out) rather than exactly conserved — the
+//!   F008 mass-balance instrumentation tracks both fluxes.
 //!
-//! ## Temporary obstacle model (F008 replaces the BC part)
+//! ## Periodic variant (tests only)
 //!
-//! The spec asks for periodic domain edges plus "solid cells copied through
-//! untouched". Taken literally (solids initialised identically to fluid),
-//! uniform flow would stay uniform forever and the `gailei_*` wake test could
-//! never pass — any scheme preserving uniform equilibrium cannot create a wake
-//! from identical solid/fluid values. Smallest change meeting the acceptance
-//! criteria while staying allocation-free and bounce-back-free (bounce-back is
-//! F008's job):
+//! The F007 periodic kernel is kept as [`step_periodic`] (`#[cfg(test)]`) for
+//! the conservation tests, which continue to pass unchanged. Production
+//! `step` (via `lib.rs`) always uses the wind-tunnel BC path below.
 //!
-//! - `reset_flow` fills **fluid** cells with equilibrium at `(1, u_inlet, 0, 0)`
-//!   and **solid** cells with equilibrium at rest `(1, 0, 0, 0)`; `set_mesh`
-//!   converts newly-solid cells to rest equilibrium (newly-fluid cells back to
-//!   inlet equilibrium) without disturbing the rest of the flow.
-//! - Streaming skips solid destinations (they stay frozen at rest) while fluid
-//!   cells pull rest-state populations out of solid neighbours, producing the
-//!   downstream deficit / upstream blockage the wake test asserts.
-//! - No bounce-back reflection, no inlet/outlet/wall BCs — those arrive in F008.
-//!   Domain edges stay periodic in this feature; the periodic path is kept as
-//!   the sole path (F008 will keep it behind a `cfg(test)` helper).
+//! ## Temporary obstacle model (F007, superseded by F008)
+//!
+//! F007 froze fresh solids at rest equilibrium with streaming that skipped
+//! solid destinations but no reflection and periodic edges. F008 keeps the
+//! rest-freeze and the destination skip, adds fluid-side full-way bounce-back,
+//! and replaces periodic edges with the wind-tunnel BC set. The module docs
+//! above describe the current (F008) behaviour.
 
 use crate::SimState;
 
@@ -149,7 +151,8 @@ pub(crate) fn macroscopic(f: &[f32], n_cells: usize, cell: usize) -> (f64, f64, 
 
 /// (Re)initialise the flow field: fluid cells → equilibrium at
 /// `(1, u_inlet, 0, 0)`, solid cells → equilibrium at rest `(1, 0, 0, 0)`,
-/// `f_next` zeroed, `steps = 0`. See the module docs for why solids rest.
+/// `f_next` zeroed, `steps = 0`, mass fluxes zeroed (F008). See the module
+/// docs for why solids rest.
 pub(crate) fn reset_state_flow(state: &mut SimState) {
     let n = state.nx * state.ny * state.nz;
     debug_assert_eq!(state.f.len(), 19 * n);
@@ -174,6 +177,8 @@ pub(crate) fn reset_state_flow(state: &mut SimState) {
     }
     state.f_next.fill(0.0);
     state.steps = 0;
+    state.mass_in_flux = 0.0;
+    state.mass_out_flux = 0.0;
 }
 
 /// Set every solid cell's 19 populations in both buffers to rest equilibrium,
@@ -210,11 +215,26 @@ pub(crate) fn retune_solid_cells(state: &mut SimState, to_fluid: &[usize]) {
     }
 }
 
-/// One BGK timestep with periodic wrap (see module docs). No allocation:
-/// only stack scalars plus reads/writes into the pre-allocated `f`/`f_next`.
-/// Degenerate empty domains and non-finite/degenerate `tau` are no-ops
-/// (never a panic, never NaN injection).
+/// One BGK timestep with the F008 wind-tunnel BC set (see module docs).
+/// No allocation: only stack scalars plus reads/writes into the pre-allocated
+/// `f`/`f_next`. Degenerate empty domains and non-finite/degenerate `tau`
+/// are no-ops (never a panic, never NaN injection).
 pub(crate) fn stream_and_collide(state: &mut SimState) {
+    collide_pass(state);
+    stream_pass_wind_tunnel(state);
+    crate::boundaries::apply_all(state);
+}
+
+/// F007 periodic kernel, kept for the conservation tests (see module docs).
+/// `#[cfg(test)]` only — production always uses [`stream_and_collide`].
+#[cfg(test)]
+pub(crate) fn step_periodic(state: &mut SimState) {
+    stream_and_collide_periodic(state);
+}
+
+/// F007 periodic kernel body (`#[cfg(test)]` only).
+#[cfg(test)]
+pub(crate) fn stream_and_collide_periodic(state: &mut SimState) {
     let nx = state.nx;
     let ny = state.ny;
     let nz = state.nz;
@@ -235,15 +255,12 @@ pub(crate) fn stream_and_collide(state: &mut SimState) {
         let f_next = &mut state.f_next;
         for c in 0..n {
             if occ[c] != 0 {
-                // Solid: copy through, no collision.
                 for i in 0..19 {
                     f_next[i * n + c] = f[i * n + c];
                 }
                 continue;
             }
             let (rho, ux, uy, uz) = macroscopic(f, n, c);
-            // Guard against degenerate density (keeps the kernel NaN-free;
-            // the sanity test asserts rho stays finite/positive).
             if !rho.is_finite() || rho <= 0.0 {
                 for i in 0..19 {
                     f_next[i * n + c] = f[i * n + c];
@@ -276,8 +293,6 @@ pub(crate) fn stream_and_collide(state: &mut SimState) {
             let ez = EZ[i];
             let base = i * n;
             if ex == 0 && ey == 0 && ez == 0 {
-                // Rest population: no shift, but still skip solid destinations
-                // so frozen solids are preserved.
                 for dst in 0..n {
                     if occ[dst] == 0 {
                         f[base + dst] = f_next[base + dst];
@@ -306,7 +321,7 @@ pub(crate) fn stream_and_collide(state: &mut SimState) {
                     for x in 0..nx {
                         let dst = dst_row + x;
                         if occ[dst] != 0 {
-                            continue; // frozen solid: keep previous values
+                            continue;
                         }
                         let xi = x as i32;
                         let mut sx = xi - ex;
@@ -318,6 +333,104 @@ pub(crate) fn stream_and_collide(state: &mut SimState) {
                         let src = src_row + (sx as usize);
                         f[base + dst] = f_next[base + src];
                     }
+                }
+            }
+        }
+    }
+}
+
+/// Shared BGK collision pass (`f` → `f_next`; solids copied through).
+fn collide_pass(state: &mut SimState) {
+    let n = state.nx * state.ny * state.nz;
+    if n == 0 || state.f.len() != 19 * n || state.f_next.len() != 19 * n {
+        return;
+    }
+    let tau = state.tau;
+    if !tau.is_finite() || tau <= 0.0 {
+        return;
+    }
+    let omega = 1.0 / tau;
+    let occ = &state.occupancy;
+    let f = &state.f;
+    let f_next = &mut state.f_next;
+    for c in 0..n {
+        if occ[c] != 0 {
+            for i in 0..19 {
+                f_next[i * n + c] = f[i * n + c];
+            }
+            continue;
+        }
+        let (rho, ux, uy, uz) = macroscopic(f, n, c);
+        if !rho.is_finite() || rho <= 0.0 {
+            for i in 0..19 {
+                f_next[i * n + c] = f[i * n + c];
+            }
+            continue;
+        }
+        let u2 = ux * ux + uy * uy + uz * uz;
+        for i in 0..19 {
+            let w = W[i];
+            let edotu = EX[i] as f64 * ux + EY[i] as f64 * uy + EZ[i] as f64 * uz;
+            let feq = w * rho * (1.0 + 3.0 * edotu + 4.5 * edotu * edotu - 1.5 * u2);
+            let f_old = f[i * n + c] as f64;
+            f_next[i * n + c] = (f_old - (f_old - feq) * omega) as f32;
+        }
+    }
+}
+
+/// Non-periodic pull-streaming (`f_next` → `f`): out-of-bounds sources are
+/// skipped (the BC pass overwrites the faces); solid destinations keep their
+/// previous values. Sources inside solids are still pulled (the bounce-back
+/// pass replaces exactly those populations with reflections).
+fn stream_pass_wind_tunnel(state: &mut SimState) {
+    let (nx, ny, nz) = (state.nx, state.ny, state.nz);
+    let n = nx * ny * nz;
+    if n == 0 || state.f.len() != 19 * n || state.f_next.len() != 19 * n {
+        return;
+    }
+    let occ = &state.occupancy;
+    let f_next = &state.f_next;
+    let f = &mut state.f;
+    for i in 0..19 {
+        let ex = EX[i] as i32;
+        let ey = EY[i] as i32;
+        let ez = EZ[i] as i32;
+        let base = i * n;
+        if ex == 0 && ey == 0 && ez == 0 {
+            for dst in 0..n {
+                if occ[dst] == 0 {
+                    f[base + dst] = f_next[base + dst];
+                }
+            }
+            continue;
+        }
+        for z in 0..nz {
+            let sz = z as i32 - ez;
+            if sz < 0 || sz >= nz as i32 {
+                // Whole row's sources are still mixed in y/x; fall through to
+                // per-cell bounds checks below (faces get BC-overwritten).
+            }
+            for y in 0..ny {
+                let sy = y as i32 - ey;
+                let dst_row = (z * ny + y) * nx;
+                let src_row_ok =
+                    sz >= 0 && sz < nz as i32 && sy >= 0 && sy < ny as i32;
+                let src_row = if src_row_ok {
+                    ((sz as usize) * ny + (sy as usize)) * nx
+                } else {
+                    0
+                };
+                for x in 0..nx {
+                    let dst = dst_row + x;
+                    if occ[dst] != 0 {
+                        continue;
+                    }
+                    let sx = x as i32 - ex;
+                    if !src_row_ok || sx < 0 || sx >= nx as i32 {
+                        continue; // out-of-domain: BC pass fixes the face
+                    }
+                    let src = src_row + (sx as usize);
+                    f[base + dst] = f_next[base + src];
                 }
             }
         }
@@ -366,7 +479,7 @@ mod tests {
     fn rest_state_is_invariant() {
         let mut s = test_state(16, 8, 8, 0.0, 1.0);
         for _ in 0..100 {
-            stream_and_collide(&mut s);
+            step_periodic(&mut s);
         }
         let n = s.nx * s.ny * s.nz;
         let mut max_rho = 0.0f64;
@@ -386,7 +499,7 @@ mod tests {
         let mut s = test_state(16, 8, 8, 0.05, 0.56);
         let m0 = total_mass(&s);
         for _ in 0..100 {
-            stream_and_collide(&mut s);
+            step_periodic(&mut s);
         }
         let m1 = total_mass(&s);
         let rel = ((m1 - m0) / m0).abs();
@@ -400,7 +513,7 @@ mod tests {
     fn uniform_flow_is_steady() {
         let mut s = test_state(16, 8, 8, 0.05, 0.56);
         for _ in 0..50 {
-            stream_and_collide(&mut s);
+            step_periodic(&mut s);
         }
         let n = s.nx * s.ny * s.nz;
         let mut max_dev = 0.0f64;
@@ -442,7 +555,7 @@ mod tests {
         // Freeze the fresh block at rest equilibrium (mirrors set_mesh).
         retune_solid_cells(&mut s, &[]);
         for _ in 0..500 {
-            stream_and_collide(&mut s);
+            step_periodic(&mut s);
         }
         let n = nx * ny * nz;
         let mut up_max: f64 = f64::NEG_INFINITY;
@@ -509,7 +622,7 @@ mod tests {
     fn no_nan_in_sanity_run() {
         let mut s = test_state(16, 8, 8, 0.05, 0.56);
         for _ in 0..2000 {
-            stream_and_collide(&mut s);
+            step_periodic(&mut s);
         }
         let n = s.nx * s.ny * s.nz;
         for c in 0..n {

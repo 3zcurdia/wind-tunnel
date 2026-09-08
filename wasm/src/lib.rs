@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use wasm_bindgen::prelude::*;
 
+mod boundaries;
 mod lbm;
 mod voxel;
 
@@ -10,6 +11,8 @@ mod voxel;
 /// `mesh_vertices` keeps deduplicated domain-space vertex positions for F012.
 /// `f` / `f_next` are the D3Q19 SoA populations (F007): 19 planes of
 /// `nx*ny*nz` `f32`, two buffers, allocated once in `init_sim`.
+/// `mass_in_flux` / `mass_out_flux` accumulate the F008 inlet/outlet mass
+/// exchange (lattice units); `reset_flow` zeroes them.
 pub struct SimState {
     pub(crate) nx: usize,
     pub(crate) ny: usize,
@@ -33,6 +36,13 @@ pub struct SimState {
     pub(crate) u_inlet: f64,
     /// Completed timesteps since the last `reset_flow` / `init_sim`.
     pub(crate) steps: u64,
+    // ── F008 mass-balance instrumentation ──────────────────────────
+    /// Accumulated inlet mass flux since the last `reset_flow`
+    /// (`ρ·u_inlet·(ny-2)(nz-2)` per step, ρ = 1).
+    pub(crate) mass_in_flux: f64,
+    /// Accumulated measured outlet mass flux (`Σ ρ·u_x` over the interior
+    /// outlet face per step).
+    pub(crate) mass_out_flux: f64,
 }
 
 impl SimState {
@@ -52,6 +62,8 @@ impl SimState {
             tau: 0.56,
             u_inlet: 0.05,
             steps: 0,
+            mass_in_flux: 0.0,
+            mass_out_flux: 0.0,
         }
     }
 
@@ -73,6 +85,8 @@ impl SimState {
             tau: 0.56,
             u_inlet: 0.05,
             steps: 0,
+            mass_in_flux: 0.0,
+            mass_out_flux: 0.0,
         };
         lbm::reset_state_flow(&mut s);
         s
@@ -240,7 +254,7 @@ fn clamp_lattice_params(u_lattice: f64, tau: f64) -> (f64, f64) {
 
 /// Re-initialize the flow field to uniform inlet conditions (keeps the mesh).
 /// Fluid cells → equilibrium at `(1, u_inlet, 0, 0)`, solid cells → rest.
-/// Never panics, even on an empty domain.
+/// Mass-flux accumulators are zeroed. Never panics, even on an empty domain.
 #[wasm_bindgen]
 pub fn reset_flow() {
     STATE.with(|s| {
@@ -248,7 +262,8 @@ pub fn reset_flow() {
     });
 }
 
-/// Advance exactly `n` lattice timesteps (periodic edges, F007 kernel).
+/// Advance exactly `n` lattice timesteps with the F008 wind-tunnel BC set
+/// (inlet / outlet / free-slip walls / obstacle bounce-back).
 /// No allocation inside the loop. Never panics.
 #[wasm_bindgen]
 pub fn step(n: u32) {
@@ -265,6 +280,17 @@ pub fn step(n: u32) {
 #[wasm_bindgen]
 pub fn steps_done() -> u64 {
     STATE.with(|s| s.borrow().steps)
+}
+
+/// Accumulated inlet/outlet mass flux since the last `reset_flow`, as
+/// `[mass_in, mass_out]` (lattice units). Temporary diagnostic shape — F013
+/// replaces it with the full `StatsRecord`. Never panics.
+#[wasm_bindgen]
+pub fn mass_balance() -> Vec<f64> {
+    STATE.with(|s| {
+        let state = s.borrow();
+        vec![state.mass_in_flux, state.mass_out_flux]
+    })
 }
 
 /// Store lattice parameters, clamped to the §3 stability envelope

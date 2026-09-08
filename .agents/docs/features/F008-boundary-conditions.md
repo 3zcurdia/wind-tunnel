@@ -9,7 +9,7 @@
 | Size | M |
 | Skill fit | `Rust` |
 | Depends on | F006 (occupancy), F007 (step kernel) |
-| Status | `[ ]` todo |
+| Status | `[x]` done |
 
 ## Goal
 
@@ -90,24 +90,24 @@ wasm/src/lib.rs              (modify) — mass flux fields, mass_balance() diagn
 
 ## Acceptance criteria
 
-- [ ] `inlet_is_velocity_clamped`: after 100 steps, every x=0 cell has
+- [x] `inlet_is_velocity_clamped`: after 100 steps, every x=0 cell has
       |u − (u_inlet,0,0)| < 1e-6.
-- [ ] `outlet_is_zero_gradient`: after 100 steps, max |f[i][nx−1] − f[i][nx−2]| over
+- [x] `outlet_is_zero_gradient`: after 100 steps, max |f[i][nx−1] − f[i][nx−2]| over
       i < 1e-9.
-- [ ] `free_slip_preserves_tangential_momentum`: initialize a shear-free flow with a
+- [x] `free_slip_preserves_tangential_momentum`: initialize a shear-free flow with a
       tangential component near a wall; after 50 steps the wall-adjacent tangential
       velocity differs from its initial value by < 1e-6 (specular property).
-- [ ] `no_flow_through_solid`: with the F006 test cube present, after 500 steps the
+- [x] `no_flow_through_solid`: with the F006 test cube present, after 500 steps the
       mean u_x inside solid-adjacent fluid pointing *into* solids is ~0 by
       construction (bounce-back verified via: total mass Σρ changes < 0.5 % over
       500 steps with BCs on).
-- [ ] `wake_exists_downstream_of_cube`: cube at placement center, u_inlet = 0.08,
+- [x] `wake_exists_downstream_of_cube`: cube at placement center, u_inlet = 0.08,
       τ = 0.56, 1 000 steps → mean u_x in a 8×8×8 box directly behind the cube is
       < 0.6 × u_inlet, and some cells there have |u_y| + |u_z| > 0.005 (flow
       deflection).
-- [ ] `steady_state_reached`: 5 000 steps on the cube case → relative change of Σρ
+- [x] `steady_state_reached`: 5 000 steps on the cube case → relative change of Σρ
       over the last 1 000 steps < 1e-3.
-- [ ] No NaN after 10 000 steps at defaults with the cube.
+- [x] No NaN after 10 000 steps at defaults with the cube.
 
 ## Test plan
 
