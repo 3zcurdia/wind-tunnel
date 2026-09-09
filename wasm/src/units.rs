@@ -14,9 +14,11 @@
 //! - `LatticeParams` carries `rho_phys`: the specified
 //!   `pressure_lattice_to_pa(ρ_rel, &LatticeParams)` signature leaves no other
 //!   place for the ρ_phys its formula requires.
-//! - On clamp-loop non-convergence the *starting* u is returned (τ clamped,
-//!   `unstable: true`); with real air this is the normal outcome, not an
-//!   exception (τ_direct ≈ 0.50003 at defaults vs the 0.505 floor).
+//! - On clamp-loop non-convergence the *starting* u is returned with
+//!   `unstable: true` and τ lifted to [`TAU_ASSIST`] (not the envelope
+//!   floor — with real air this is the normal outcome, not an exception:
+//!   τ_direct ≈ 0.50003 at defaults vs the 0.505 floor; see DECISIONS.md
+//!   2026-09-08 and the 2026-09-09 stability-assist entry).
 
 /// Specific gas constant of dry air [J/(kg·K)] (ARCHITECTURE §4).
 pub const R_SPECIFIC: f64 = 287.05;
@@ -27,6 +29,21 @@ pub const CS2: f64 = 1.0 / 3.0;
 /// Stability envelope for τ (ARCHITECTURE §3).
 pub const TAU_MIN: f64 = 0.505;
 pub const TAU_MAX: f64 = 0.95;
+/// Numerical-viscosity assist (2026-09-09): τ stored when the physical
+/// clamp loop fails on the low side. The 0.505 floor is ~zero-dissipation
+/// BGK (ω ≈ 1.98) — any obstacle at real-air Re blows up within seconds,
+/// and no UI combination can ever leave the floor (even U = 1 m/s,
+/// μ = 3.0e-5, P = 50 kPa on the fine grid gives τ ≈ 0.503). 0.56
+/// (ω ≈ 1.786, ν_lat = 0.02) puts the lattice Reynolds number at
+/// Re_lat = U_lat·L_lat/ν_lat ≈ 0.07·32/0.02 ≈ 120 — laminar shedding,
+/// the regime this visual toy can actually integrate. Measured margin:
+/// τ = 0.53 blows up ≈ step 1300 on a 4-cell cube; 0.54–0.60 survive it
+/// plus the U = 60 thin-plate corner for 3000 steps; 0.56 is also the
+/// long-proven F007/F010 fixture point (5000-step healthy run). Inside the
+/// §3 envelope, so the ARCHITECTURE contract still holds; `unstable: true`
+/// flags that the point runs on assist viscosity (effective Re below the
+/// displayed physical Re).
+pub const TAU_ASSIST: f64 = 0.56;
 /// Hard ceiling for the lattice velocity (ARCHITECTURE §3).
 pub const U_LATTICE_MAX: f64 = 0.15;
 /// Floor for the *starting* lattice velocity (spec §2; a guard only — the
@@ -56,7 +73,9 @@ pub struct PhysicalConditions {
 pub struct LatticeParams {
     /// Lattice inlet velocity (x-direction), ≤ 0.15.
     pub u_lattice: f64,
-    /// BGK relaxation time, in [0.505, 0.95] unless [`Self::zeroed`].
+    /// BGK relaxation time: converged τ in [0.505, 0.95], or [`TAU_ASSIST`]
+    /// when the loop failed low (see [`lattice_params`]); 0.0 only in
+    /// [`Self::zeroed`].
     pub tau: f64,
     /// Physical timestep [s].
     pub dt: f64,
@@ -109,8 +128,12 @@ fn candidate_tau_dt(nu: f64, u_lattice: f64, dx_phys: f64, u_mps: f64) -> (f64, 
 /// 60 m/s (the UI range ends), clamped to [0.03, 0.15]. The clamp loop then
 /// halves `u_lattice` while τ > 0.95 and scales it ×1.5 while τ < 0.505 (at
 /// most 8 iterations); on success the converged triple is returned with
-/// `unstable: false`, otherwise the *starting* u with τ clamped into the
-/// envelope and `unstable: true` (see module docs + DECISIONS.md).
+/// `unstable: false`, otherwise the *starting* u is returned with
+/// `unstable: true` and τ lifted to [`TAU_ASSIST`] when the failure is on
+/// the low side (the 0.505 floor itself diverges within seconds behind any
+/// obstacle — returning it would guarantee a blowup/recovery/latch loop no
+/// UI input can escape; see module docs). A high-side failure still clamps
+/// to [`TAU_MAX`].
 ///
 /// Degenerate input (any non-finite value, non-positive U/P/μ/L, negative
 /// characteristic length, or `nx == 0`) yields [`LatticeParams::zeroed`] —
@@ -159,7 +182,9 @@ pub fn lattice_params(c: &PhysicalConditions, nx: usize) -> LatticeParams {
     let (tau_restored, _) = candidate_tau_dt(nu, u_start, dx, c.u_mps);
     LatticeParams {
         u_lattice: u_start,
-        tau: tau_restored.clamp(TAU_MIN, TAU_MAX),
+        // Low-side failure (the real-air normal case) runs on assist
+        // viscosity; a high-side failure still clamps to the envelope max.
+        tau: tau_restored.clamp(TAU_ASSIST, TAU_MAX),
         dt,
         dx_phys: dx,
         re,
@@ -254,8 +279,8 @@ mod tests {
     /// Δx = 1/128 = 0.0078125 (exact); Δt = u·Δx/U = 3.8400423729e-05;
     /// §4 direct τ = 3νΔt/Δx² + 0.5 = 0.5000283718 < 0.505, so the ×1.5 loop
     /// cannot converge in 8 iterations (needs ~176×; see DECISIONS.md):
-    /// u is restored to the start value, τ clamps to the envelope floor
-    /// 0.505, and `unstable` is true. The spec's `unstable: false`
+    /// u is restored to the start value, τ lifts to the stability assist
+    /// [`TAU_ASSIST`], and `unstable` is true. The spec's `unstable: false`
     /// expectation is unachievable with real air physics at this resolution
     /// (criterion left unticked); envelope membership, the u ceiling, and the
     /// hand-computed triple are asserted instead.
@@ -273,7 +298,7 @@ mod tests {
             "dt mismatch: {:e}",
             p.dt
         );
-        assert_eq!(p.tau, 0.505, "tau not clamped to the envelope floor");
+        assert_eq!(p.tau, TAU_ASSIST, "tau not lifted to the assist value");
         assert!(
             (TAU_MIN..=TAU_MAX).contains(&p.tau),
             "tau outside envelope: {}",
@@ -315,20 +340,21 @@ mod tests {
         assert!(!p.unstable, "clamp loop should have converged");
 
         // Physical-μ reality check at U = 60: direct τ ≈ 0.5000051, so the
-        // low-side loop exhausts → start u restored, τ clamped, unstable.
+        // low-side loop exhausts → start u restored, τ lifted to assist,
+        // unstable.
         let c_phys = PhysicalConditions {
             u_mps: 60.0,
             ..default_conditions()
         };
         let q = lattice_params(&c_phys, 128);
         assert!((q.u_lattice - 0.15).abs() < 1e-12);
-        assert_eq!(q.tau, TAU_MIN);
+        assert_eq!(q.tau, TAU_ASSIST);
         assert!(q.unstable);
     }
 
     /// P = 50 kPa, U = 60, μ = 0.5e-5: direct τ ≈ 0.50000808 (ρ = 0.59418619,
-    /// ν = 8.4148761e-6) → low-side loop exhausts → `unstable: true`, never a
-    /// panic, τ best-effort clamped into [0.505, 0.95].
+    /// ν = 8.4148761e-6) → low-side loop exhausts → `unstable: true` with
+    /// the assist τ, never a panic, τ inside [0.505, 0.95].
     #[test]
     fn extreme_pressure_unstable_flag() {
         let c = PhysicalConditions {

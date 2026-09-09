@@ -999,3 +999,39 @@ run (320 steps, steady (0.08, 0.56)) caches cd = 9.10465722714673
 (coarse-grid 33 %-blockage number, not a physics claim) and the frozen
 readout reproduces it bit-for-bit with `stable: false`, zero non-finite
 fields.
+
+---
+
+## 2026-09-09 — Stability assist (numerical viscosity on the τ-clamp path)
+
+**Field evidence.** Production console log showed the continuous-run
+recovery latching CATASTROPHIC every ~1.4 s even at U = 1 m/s (minimum):
+every incident carried `tau: 0.505, conditionsUnstable: true`, wind
+halving 7.5 → 3.75 → 1.875 → 1 m/s without effect. The recovery policy was
+futile by construction, not buggy: with real air τ_direct ≈ 0.50003, the
+×1.5 clamp loop needs ~176× u growth but caps out in 8 iterations, so τ
+pins at the 0.505 envelope floor for **every** UI combination (verified:
+even U = 1, μ = 3.0e-5, P = 50 kPa on the fine grid gives τ ≈ 0.503).
+BGK at τ = 0.505 (ω ≈ 1.98) has ~zero dissipation — any obstacle blows up
+within seconds, and no wind/viscosity slider can prevent it.
+
+**Change** (`wasm/src/units.rs`, `TAU_ASSIST = 0.56`): when the clamp loop
+fails on the low side, `lattice_params` returns the starting u with
+τ = 0.56 instead of the 0.505 floor. High-side failures still clamp to
+0.95; `set_lattice_params` keeps the raw [0.505, 0.95] envelope; the ABI
+is unchanged (same structs/fields). 0.56 sits inside the ARCHITECTURE §3
+envelope, so no contract conflict — `unstable: true` now means "running
+on assist viscosity" (effective lattice Re ≈ 120 vs displayed physical
+Re ≈ 2.5e5; this toy renders plausible flow, not lab numbers).
+
+**Measured margin** (release, `cargo test --release`, probes since
+removed): τ = 0.53 blows up ≈ step 1300 on a harsh 4-cell cube (settled
+≈ 700 steps, then shedding grows unbounded — global exponential blowup,
+26 % bad cells, not a corner-cell false latch); 0.54–0.60 survive that
+case 1500 steps plus the U = 60 (u_lat = 0.15) 8-cell-cube and thin-plate
+corners 3000 steps; 0.56 is additionally the long-proven F007/F010
+fixture point (5000-step healthy run). Kept regression:
+`real_air_assist_run_stays_stable` (real-air `set_conditions` + 4³ cube,
+1500 steps, Low grid). Updated the two tests pinning τ = 0.505
+(`units.rs` ×2, `lib.rs` ×1) and the ControlPanel assist banner copy;
+`stats.rs` fixtures pin (u, τ) directly and are unaffected.

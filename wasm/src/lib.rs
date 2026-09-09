@@ -948,10 +948,12 @@ mod tests {
         init_sim(128, 48, 48, 0);
         let p = set_conditions(15.0, 101.325, 1.81e-5, 1.0, 0.25);
         // Real air never converges into the τ envelope (DECISIONS.md
-        // 2026-09-08): best-effort clamped values + unstable flag.
+        // 2026-09-08): best-effort start-u values + assist τ + unstable flag
+        // (2026-09-09: the 0.505 floor itself diverges, so the fallback runs
+        // on TAU_ASSIST instead).
         assert!(p.unstable());
         assert!((p.u_lattice() - 0.07372881355932204).abs() < 1e-12);
-        assert_eq!(p.tau(), 0.505);
+        assert_eq!(p.tau(), crate::units::TAU_ASSIST);
         assert!((p.rho_phys() - 1.2041183164).abs() < 1e-9);
         let q = get_lattice_params();
         assert_eq!(q.u_lattice(), p.u_lattice());
@@ -1122,6 +1124,39 @@ mod tests {
         assert!(
             STATE.with(|s| lbm::verify_stability_full(&s.borrow())),
             "full-grid verification must agree on the healthy run"
+        );
+    }
+
+    /// 2026-09-09 stability assist: real-air `set_conditions` (assist τ)
+    /// with a centered obstacle stays stable for 1500 steps on the Low
+    /// grid — the production path that latched within ~150 steps at the
+    /// 0.505 floor (Re_lat ≈ 120 here vs ≈ 1400 there).
+    #[test]
+    fn real_air_assist_run_stays_stable() {
+        init_sim(64, 24, 24, 0);
+        let p = set_conditions(15.0, 101.325, 1.81e-5, 1.0, 0.25);
+        assert!(p.unstable(), "real air must flag the assist path");
+        assert_eq!(p.tau(), crate::units::TAU_ASSIST);
+        // 4³ cube at the ARCH §3 placement center (mirrors the F008 fixture).
+        let (nx, ny, nz) = (64usize, 24usize, 24usize);
+        let cx = (0.35 * nx as f64) as usize;
+        let (cy, cz) = (ny / 2, nz / 2);
+        place_box_state(cx - 2, cx + 2, cy - 2, cy + 2, cz - 2, cz + 2);
+        reset_flow();
+        assert!(is_stable(), "fresh assist-τ cube case must report stable");
+        // 23 × 64 + 28 = 1500.
+        for _ in 0..23 {
+            step(64);
+        }
+        step(28);
+        assert_eq!(steps_done(), 1500, "1500 lattice steps must complete");
+        assert!(
+            is_stable(),
+            "assist-τ 1500-step cube run must stay stable"
+        );
+        assert!(
+            STATE.with(|s| lbm::verify_stability_full(&s.borrow())),
+            "full-grid verification must agree on the assist-τ run"
         );
     }
 

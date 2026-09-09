@@ -258,9 +258,6 @@ function Shell({ onEngineRetry }: { onEngineRetry: () => void }) {
       <EngineBootPanel onRetry={onEngineRetry} />
       <header className="flex h-12 shrink-0 items-center justify-between border-b border-neutral-800 px-4">
         <h1 className="text-sm font-semibold tracking-wide">Wind Tunnel</h1>
-        <span className="rounded-full border border-neutral-700 px-2 py-0.5 text-[10px] uppercase tracking-wider text-neutral-400">
-          ※ demo placeholder
-        </span>
       </header>
       <main className="flex min-h-0 flex-1 gap-4 p-4">
         <ControlsRail />

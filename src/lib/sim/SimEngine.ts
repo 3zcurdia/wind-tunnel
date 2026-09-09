@@ -168,6 +168,32 @@ const BLOWUP_WINDOW_MS = 30000;
 export const UNSTABLE_LOCK_MESSAGE =
   "Simulation unstable — reduce wind speed or change model";
 
+/**
+ * One instability incident, kept for deluxe console diagnostics + devtools.
+ *
+ * `transient` = soft auto-reset, the loop keeps running (the normal case).
+ * `catastrophic` = repeated blowups inside the latch window — the engine
+ * paused and waits for an explicit Reset (banner).
+ */
+export interface StabilityEvent {
+  readonly at: string;
+  readonly kind: "transient" | "catastrophic";
+  readonly stepsPerFrame: number;
+  readonly avgStepMs: number;
+  readonly uMps: number;
+  readonly uLattice: number;
+  readonly tau: number;
+  readonly conditionsUnstable: boolean;
+  readonly activeParticles: number;
+  readonly blowupsInWindow: number;
+  readonly windReduced: boolean;
+  readonly prevUMps: number | null;
+  readonly nextUMps: number | null;
+}
+
+/** Cap on the in-memory stability ring buffer (devtools readout). */
+const STABILITY_LOG_MAX = 50;
+
 /** EMA weight for the loop-driven FPS counter (F017 §2). */
 const FPS_EMA_ALPHA = 0.1;
 /** Longer frame gaps are discarded (background-tab return drags the EMA). */
@@ -192,8 +218,17 @@ export interface AppliedConditions {
 export interface TickResult {
   /** Lattice steps executed this frame (0 while paused). */
   readonly stepsRun: number;
-  /** True when an instability auto-recovery ran this frame. */
+  /**
+   * True when a soft (transient) auto-recovery ran this frame — the flow was
+   * reset and the loop keeps running. The loop surfaces this as a
+   * non-blocking info toast; see `windReduced` for whether the wind speed
+   * was also halved.
+   */
   readonly recovered: boolean;
+  /** True when the soft recovery also halved the wind speed (5 s throttle). */
+  readonly windReduced: boolean;
+  /** Total soft recoveries since init (monotonic, for diagnostics). */
+  readonly recoveryCount: number;
   /** Currently alive particles in the wasm pool. */
   readonly activeParticles: number;
   /** Latched stability flag after this frame's work. */
@@ -464,6 +499,16 @@ export class SimEngine {
   private recoveryTimes: number[] = [];
   /** F022 latch: two blowups within 30 s stopped auto-recovery. */
   private unstableLocked = false;
+  /** Total soft (transient) recoveries since init — monotonic counter. */
+  private recoveryCount = 0;
+  /** Ring buffer of recent instability incidents (newest last). */
+  private stabilityLog: StabilityEvent[] = [];
+  /** Detail of the most recent soft recovery (backs the recovery toast). */
+  private lastRecoveryInfo: {
+    readonly windReduced: boolean;
+    readonly prevUMps: number | null;
+    readonly nextUMps: number | null;
+  } | null = null;
   /** Last stable readout snapshot for the F022 stats-freeze path. */
   private lastGoodReadout: SimReadout | null = null;
   private fpsEma = 0;
@@ -953,16 +998,23 @@ export class SimEngine {
    * The frame unit (F019 contract): the single entry point per frame — no
    * other wasm calls belong in the render loop.
    *
+   * Continuous-run policy (supersedes the pause-on-first-blowup behaviour):
+   *
    * 1. While running: adapt `stepsPerFrame` (1–8) against `avg_step_ms`,
-   *    `step(steps)`, then `is_stable()` — on instability: pause, halve
-   *    `u_mps` (min 1 m/s), commit + `resetFlow()`, mark `recovered`
-   *    (halving + toast flag throttled to one recovery per 5 s; the
-   *    pause + reset always run).
-   * 2. While running and stable: `advect_particles(1.0)` + top-up respawn
-   *    (≤ 2 000/frame once below 98 % of target).
-   * 3. While paused: stepping halts and buffers stay on screen untouched.
-   * 4. F022 §3: while `unstableLocked`, instability no longer auto-recovers
-   *    — the frame stays paused and frozen until `resetUnstable()`.
+   *    `step(steps)`, then `is_stable()` — on a transient instability the
+   *    flow is soft-reset (`reset_flow()`, plus a throttled wind-speed
+   *    halving at most once per 5 s) and the loop KEEPS RUNNING. `recovered`
+   *    flags the frame so the loop can toast non-blockingly; a deluxe
+   *    diagnostic group is always written to the console for developers.
+   * 2. While running and stable (including right after a soft reset):
+   *    `advect_particles(1.0)` + top-up respawn (≤ 2 000/frame once below
+   *    98 % of target) — visuals never freeze on a transient.
+   * 3. While paused (user pause only): stepping halts and buffers stay on
+   *    screen untouched.
+   * 4. Catastrophic failure only: two blowups within the 30 s window latch
+   *    `unstableLocked` (F022 §3) — the engine pauses and the banner owns
+   *    Reset via `resetUnstable()`. This is the ONLY path that stops the
+   *    loop without an explicit user pause.
    */
   tick(budgetMs: number): TickResult {
     const api = this.requireApi();
@@ -979,6 +1031,7 @@ export class SimEngine {
 
     let stepsRun = 0;
     let recovered = false;
+    let windReduced = false;
     if (this.running) {
       this.stepsPerFrame = nextStepsPerFrame(
         this.stepsPerFrame,
@@ -1001,9 +1054,15 @@ export class SimEngine {
           this.pause();
           recovered = false;
         } else {
-          recovered = this.recover(nowMs);
+          const outcome = this.recover(nowMs);
+          recovered = outcome.recovered;
+          windReduced = outcome.windReduced;
         }
-      } else {
+      }
+      // Intentionally NOT `else`: after a soft (transient) recovery the
+      // field is a clean uniform flow again, so advection + top-up still
+      // run on the detecting frame — no one-frame visual freeze.
+      if (api.is_stable() && !this.unstableLocked) {
         api.advect_particles(ADVECT_DT_LATTICE);
         const active = api.active_particle_count();
         if (active < this.particleTarget * 0.98) {
@@ -1011,6 +1070,10 @@ export class SimEngine {
             Math.min(this.particleTarget - active, RESPAWN_PER_FRAME_MAX),
           );
         }
+      } else if (this.unstableLocked) {
+        // Catastrophic latch tripped this frame: freeze on last-good
+        // buffers (the banner owns Reset) — same as the old paused path.
+        this.pause();
       }
     }
 
@@ -1018,6 +1081,8 @@ export class SimEngine {
     return {
       stepsRun,
       recovered,
+      windReduced,
+      recoveryCount: this.recoveryCount,
       activeParticles: api.active_particle_count(),
       stable,
       unstableLocked: this.unstableLocked,
@@ -1039,42 +1104,199 @@ export class SimEngine {
     this.recoveryTimes = [];
     this.requireApi().reset_flow();
     this.play();
+    try {
+      console.info(
+        `%c[wind-tunnel] stability latch cleared by user Reset — resuming ` +
+          `at ${this.lastConditions.uMps.toFixed(1)} m/s ` +
+          `(${this.recoveryCount} transient recoveries so far)`,
+        "color:#22c55e;font-weight:bold",
+      );
+    } catch {
+      // Console unavailable — resume regardless.
+    }
   }
 
   /**
-   * Instability recovery: pause + halve wind speed + commit + soft restart.
-   * Returns true when a full (halving) recovery ran; the 5 s throttle gates
-   * the halving (spamming conditions can't loop-crash), but pause + reset
-   * always run so the latch clears and the badge can return to STABLE.
+   * Instability recovery — continuous-run policy.
    *
-   * F022 §3: recoveries inside a 30 s window are counted — the second one
-   * (a blowup at already-reduced speed, beyond auto-recovery) latches
-   * `unstableLocked` instead and returns false, so the loop's recovery toast
-   * stays silent and the persistent banner owns the message.
+   * - Transient (first blowup in the window): soft-reset the flow
+   *   (`reset_flow`), halve the wind speed at most once per 5 s, keep
+   *   `running` untouched, and return `{ recovered: true }` so the loop can
+   *   toast non-blockingly. Always writes a deluxe console diagnostic.
+   * - Catastrophic (second blowup inside the 30 s window — a blowup at
+   *   already-reduced speed, beyond auto-recovery): latch `unstableLocked`,
+   *   reset to a clean field, and return `{ recovered: false }`. The caller
+   *   pauses; the banner owns Reset. A `console.error` group records the
+   *   full incident for developers.
    */
-  private recover(nowMs: number): boolean {
+  private recover(nowMs: number): { recovered: boolean; windReduced: boolean } {
     const api = this.requireApi();
-    this.pause();
+    // Snapshot BEFORE reset_flow clears the Rust latch — this is the
+    // developer-facing "what happened" payload.
+    const activeBefore = this.safeActiveCount(api);
+    const prevU = this.lastConditions.uMps;
     this.recoveryTimes = [
       ...this.recoveryTimes.filter((t) => nowMs - t < BLOWUP_WINDOW_MS),
       nowMs,
     ];
-    if (this.recoveryTimes.length >= 2) {
+    const blowupsInWindow = this.recoveryTimes.length;
+    if (blowupsInWindow >= 2) {
       this.unstableLocked = true;
       api.reset_flow();
-      return false;
+      const event: StabilityEvent = {
+        at: new Date().toISOString(),
+        kind: "catastrophic",
+        stepsPerFrame: this.stepsPerFrame,
+        avgStepMs: this.avgStepMs,
+        uMps: prevU,
+        uLattice: this.applied.uLattice,
+        tau: this.applied.tau,
+        conditionsUnstable: this.applied.unstable,
+        activeParticles: activeBefore,
+        blowupsInWindow,
+        windReduced: false,
+        prevUMps: prevU,
+        nextUMps: prevU,
+      };
+      this.pushStabilityEvent(event);
+      this.logCatastrophic(event);
+      this.lastRecoveryInfo = null;
+      return { recovered: false, windReduced: false };
     }
-    const full = nowMs - this.lastRecoveryMs >= RECOVERY_THROTTLE_MS;
-    if (full) {
+    // Transient: throttle only the wind-speed halving (spamming conditions
+    // can't loop-crash); the reset always runs so the latch clears.
+    let windReduced = false;
+    let nextU: number | null = null;
+    if (nowMs - this.lastRecoveryMs >= RECOVERY_THROTTLE_MS) {
       this.lastRecoveryMs = nowMs;
-      const halved = Math.min(
-        60,
-        Math.max(1, this.lastConditions.uMps / 2),
-      );
-      this.setConditions({ ...this.lastConditions, uMps: halved });
+      const halved = Math.min(60, Math.max(1, prevU / 2));
+      try {
+        this.setConditions({ ...this.lastConditions, uMps: halved });
+        windReduced = true;
+        nextU = halved;
+      } catch {
+        // A failed conditions commit must not block the flow reset below.
+        windReduced = false;
+        nextU = null;
+      }
     }
     api.reset_flow();
-    return full;
+    this.recoveryCount += 1;
+    this.lastRecoveryInfo = { windReduced, prevUMps: prevU, nextUMps: nextU };
+    const event: StabilityEvent = {
+      at: new Date().toISOString(),
+      kind: "transient",
+      stepsPerFrame: this.stepsPerFrame,
+      avgStepMs: this.avgStepMs,
+      uMps: prevU,
+      uLattice: this.applied.uLattice,
+      tau: this.applied.tau,
+      conditionsUnstable: this.applied.unstable,
+      activeParticles: activeBefore,
+      blowupsInWindow,
+      windReduced,
+      prevUMps: prevU,
+      nextUMps: nextU,
+    };
+    this.pushStabilityEvent(event);
+    this.logTransient(event);
+    // Deliberately no `pause()`: the simulation runs continuously through
+    // transients and only stops on the catastrophic latch above.
+    return { recovered: true, windReduced };
+  }
+
+  /** Total soft recoveries since init (monotonic — survives resets). */
+  getRecoveryCount(): number {
+    return this.recoveryCount;
+  }
+
+  /** Newest-last incident history (capped copy — safe for devtools). */
+  getStabilityLog(): readonly StabilityEvent[] {
+    return [...this.stabilityLog];
+  }
+
+  /** Detail of the most recent soft recovery (backs the recovery toast). */
+  getLastRecoveryInfo(): {
+    readonly windReduced: boolean;
+    readonly prevUMps: number | null;
+    readonly nextUMps: number | null;
+  } | null {
+    return this.lastRecoveryInfo;
+  }
+
+  private safeActiveCount(api: { active_particle_count(): number }): number {
+    try {
+      const n = api.active_particle_count();
+      return Number.isFinite(n) && n >= 0 ? Math.floor(n) : -1;
+    } catch {
+      return -1;
+    }
+  }
+
+  private pushStabilityEvent(event: StabilityEvent): void {
+    this.stabilityLog = [...this.stabilityLog, event].slice(
+      Math.max(0, this.stabilityLog.length + 1 - STABILITY_LOG_MAX),
+    );
+  }
+
+  /**
+   * Deluxe transient diagnostic (console): collapsed group + warn summary +
+   * structured payload + one-line remediation hint. Always emitted (never
+   * sampled) — a collapsed group is cheap, and a lost incident is worse
+   * than a noisy console.
+   */
+  private logTransient(event: StabilityEvent): void {
+    const n = this.recoveryCount;
+    const label =
+      `%c[wind-tunnel] transient instability #${n} — flow auto-reset, continuing` +
+      (event.windReduced && event.nextUMps !== null
+        ? ` (wind ${event.prevUMps?.toFixed?.(1) ?? "?"} → ${event.nextUMps.toFixed(1)} m/s)`
+        : " (wind unchanged)");
+    try {
+      console.groupCollapsed(label, "color:#f59e0b;font-weight:bold");
+      console.warn(
+        `[wind-tunnel] LBM stability latch tripped at ${event.at} ` +
+          `(${event.blowupsInWindow} blowup(s) in the last ${BLOWUP_WINDOW_MS / 1000}s window). ` +
+          `Soft reset applied; simulation keeps running. ` +
+          `A repeat within the window will latch CATASTROPHIC and pause.`,
+      );
+      console.log("[wind-tunnel] stability incident:", { ...event });
+      console.log(
+        "[wind-tunnel] hint: blowups usually mean the operating point " +
+          "exceeds what BGK can integrate (sharp/under-resolved obstacle, " +
+          "very high wind). " +
+          "Try lower wind, higher viscosity, or a smoother model. " +
+          "History: engine.getStabilityLog().",
+      );
+      console.groupEnd();
+    } catch {
+      // Console unavailable (embedded webview) — never break the loop.
+    }
+  }
+
+  /** Deluxe catastrophic diagnostic (console): error group, full payload. */
+  private logCatastrophic(event: StabilityEvent): void {
+    try {
+      console.groupCollapsed(
+        "%c[wind-tunnel] CATASTROPHIC instability — auto-recovery stopped, Reset required",
+        "color:#ef4444;font-weight:bold",
+      );
+      console.error(
+        `[wind-tunnel] ${event.blowupsInWindow} blowups within ` +
+          `${BLOWUP_WINDOW_MS / 1000}s at ${event.at}. ` +
+          `Engine latched unstableLocked=true and paused; ` +
+          `flow was reset to a clean field pending Reset.`,
+      );
+      console.error("[wind-tunnel] catastrophic incident:", { ...event });
+      console.error(
+        "[wind-tunnel] action: reduce wind speed / raise viscosity / simplify " +
+          "the model, then press Reset in the banner. " +
+          "Full history: engine.getStabilityLog().",
+      );
+      console.groupEnd();
+    } catch {
+      // Console unavailable — the banner still owns the user-visible path.
+    }
   }
 
   // ── zero-copy readouts ─────────────────────────────────────────────────

@@ -439,8 +439,9 @@ export function ControlPanel({
           </div>
           {conditionsUnstable ? (
             <p className="mt-2 rounded-md border border-amber-800 bg-amber-950 px-2 py-1 text-[11px] text-amber-300">
-              Operating point is outside the stable envelope (τ clamped) —
-              expect unphysical flow until auto-recovery lands in F019.
+              Stability assist active — real-air viscosity cannot reach a
+              stable τ at this grid, so the solver runs on assist viscosity.
+              Flow stays visual; effective Re is lower than shown.
             </p>
           ) : null}
         </section>

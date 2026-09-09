@@ -127,8 +127,9 @@ export interface SimulationContextValue {
   /** Engine access for the frame loop (`useSimulation`, F019). Stable. */
   getEngine(): SimEngine;
   /**
-   * Loop→state sync after an instability auto-recovery: pulls the halved
-   * conditions + paused state from the engine and toasts. Stable.
+   * Loop→state sync after a transient auto-recovery: pulls the (possibly
+   * halved) conditions from the engine and toasts non-blockingly. The loop
+   * keeps running — only the catastrophic latch pauses. Stable.
    */
   notifyRecovery(): void;
   /**
@@ -514,8 +515,9 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
   }, [engine]);
 
   const notifyRecovery = useCallback(() => {
-    // A debounced drag value from before the recovery would clobber the
-    // halved wind speed — drop it (the user can re-drag afterwards).
+    // Continuous-run policy: a transient recovery keeps the loop running —
+    // drop any debounced drag value from before the halving so it can't
+    // clobber the reduced wind speed (the user can re-drag afterwards).
     if (timerRef.current !== null) {
       window.clearTimeout(timerRef.current);
       timerRef.current = null;
@@ -525,10 +527,19 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
     setConditionsState(recovered);
     setAppliedUnstable(engine.getApplied().unstable);
     setRunning(engine.isRunning);
-    pushToast(
-      `Flow diverged — wind reduced to ${recovered.uMps.toFixed(1)} m/s and simulation paused.`,
-      "info",
-    );
+    const info = engine.getLastRecoveryInfo();
+    const count = engine.getRecoveryCount();
+    if (info?.windReduced && info.nextUMps !== null) {
+      pushToast(
+        `Flow instability #${count} — flow reset, wind reduced to ${recovered.uMps.toFixed(1)} m/s, continuing.`,
+        "info",
+      );
+    } else {
+      pushToast(
+        `Flow instability #${count} — flow reset, continuing (wind unchanged).`,
+        "info",
+      );
+    }
   }, [engine, pushToast]);
 
   const transport = useMemo<SimulationTransport>(

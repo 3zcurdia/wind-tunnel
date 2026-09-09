@@ -42,7 +42,7 @@ touching `src/app`.
    `<body className="bg-neutral-950 text-neutral-100 antialiased">`, metadata title
    `"Wind Tunnel Simulator"`, description from ROADMAP vision line.
 4. **Placeholder page** (`src/app/page.tsx`): a static, server-renderable layout with:
-   - Header bar (h-12): title "Wind Tunnel" + a `※ demo placeholder` badge.
+   - Header bar (h-12): title "Wind Tunnel"
    - Main area: `flex` — left rail `w-80` (empty panel placeholder with title
      "Controls"), remaining area a bordered `min-h-[60vh]` box titled "Viewport".
    - Bottom bar (h-28): "Stats" placeholder.
