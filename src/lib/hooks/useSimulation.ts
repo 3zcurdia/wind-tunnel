@@ -90,7 +90,8 @@ function waitForSceneManager(signal: { cancelled: boolean }): Promise<SceneManag
  */
 export function useSimulation(): void {
   const sim = useSimulationContext();
-  const { file, sample, setMeta, setParseError } = useModel();
+  const { file, sample, meta, orientation, setMeta, setParseError } =
+    useModel();
   const {
     getEngine,
     notifyRecovery,
@@ -289,9 +290,10 @@ export function useSimulation(): void {
   // The engine re-init (new grid + rescaled re-voxelization) already ran in
   // `context.setQuality`; this seats the display on it: rebuild the domain
   // box, rebuild the smoke rake at the tier's tracer count, and re-show the
-  // model from the engine's rescaled soup (same vertex order, so the
-  // heatmap index map rebuilds itself in the loop via the geometry swap).
-  // Skipped before the loop mounts (construction already uses live dims).
+  // model from the engine's applied (orientation-corrected, F024) soup
+  // (same vertex order, so the heatmap index map rebuilds itself in the
+  // loop via the geometry swap). Skipped before the loop mounts
+  // (construction already uses live dims).
   useEffect(() => {
     const manager = managerRef.current;
     const viz = vizRef.current;
@@ -311,7 +313,7 @@ export function useSimulation(): void {
     smokeLayer.visible = settingsRef.current.smokeEnabled;
     viz.tracers = tracers;
     vizRef.current = { ...viz, tracers };
-    const soup = engine.getMeshSoup();
+    const soup = engine.getAppliedSoup();
     if (soup) {
       const rebuilt = new BufferGeometry();
       rebuilt.setAttribute("position", new BufferAttribute(soup.soup, 3));
@@ -325,6 +327,40 @@ export function useSimulation(): void {
       manager.clearModel();
     }
   }, [quality, getEngine]);
+
+  // ── orientation commit (F024) ────────────────────────────────────────────
+  // Effect on `[orientation, meta]`: with a mesh present,
+  // `engine.applyOrientation(o)` (rotate → `set_mesh` → `reset_flow`, all
+  // inside the engine) then rebuild the display mesh from
+  // `engine.getAppliedSoup()` — the loop re-attaches the heatmap on the
+  // geometry swap. The `meta` dep re-fires after a model pipeline
+  // completes, so a rotation made mid-upload applies to the new mesh (the
+  // engine skip-guard makes the common default-orientation case a no-op).
+  // No toast on commit — the Cd "—" sentinel and visibly restarting
+  // particles are the signal (viscosity-restart precedent).
+  useEffect(() => {
+    const manager = managerRef.current;
+    if (!manager) return;
+    const engine = getEngine();
+    // No mesh yet (or engine torn down mid-flight): `applyOrientation`
+    // would no-op — wait for the pipeline's `meta` instead.
+    if (!engine.getMeshSoup()) return;
+    let committed = null;
+    try {
+      committed = engine.applyOrientation(orientation);
+    } catch {
+      // A voxelization failure keeps the previous obstacle + display mesh
+      // (same failure-semantics as the model pipeline).
+      return;
+    }
+    if (!committed) return;
+    const applied = engine.getAppliedSoup();
+    if (!applied) return;
+    const rebuilt = new BufferGeometry();
+    rebuilt.setAttribute("position", new BufferAttribute(applied.soup, 3));
+    manager.showModel(rebuilt);
+    rebuilt.dispose();
+  }, [orientation, meta, getEngine]);
 
   // ── smoke rake/history sync (param change re-seeds live, per spec) ─────
   // Construction already uses the latest settings, so a pre-mount change is

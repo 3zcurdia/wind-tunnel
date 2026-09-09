@@ -75,7 +75,7 @@ F003 and can proceed while Phase 1 UI work happens.
 
 ### Phase 7 — Post-v1 Interaction
 
-- [ ] [F024 — Viewport model rotation (angle of attack)](features/F024-viewport-model-rotation.md) — `M` `UI/3D`
+- [x] [F024 — Viewport model rotation (angle of attack)](features/F024-viewport-model-rotation.md) — `M` `UI/3D` (rev 2 2026-09-09: camera-relative gestures + arrow-key/button stepping + snap-back fix; rev 1 2026-09-08. Visual/browser criteria need a browser — see spec notes)
 
 ---
 

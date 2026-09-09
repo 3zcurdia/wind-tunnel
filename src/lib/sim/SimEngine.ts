@@ -14,6 +14,7 @@ import {
 } from "@/lib/sim/quality";
 import { DOMAIN, type SimReadout } from "@/lib/sim/types";
 import { loadWasm, type WasmApi } from "@/lib/sim/wasm";
+import type { ModelOrientation } from "@/lib/sim/ModelContext";
 
 /**
  * The single owner of every raw WASM ABI call (F019, ARCHITECTURE.md §6).
@@ -293,6 +294,114 @@ export function rescaleTriangleSoup(
   return out;
 }
 
+/**
+ * Wrap one orientation angle in degrees to `[-180, 180)` (F024).
+ *
+ * Pure helper shared by `ModelContext.setOrientation` and the headless
+ * rotation suite. Non-finite input maps to 0 (a programming error must not
+ * smuggle NaN into the voxelizer); +180 wraps to −180 (same direction).
+ */
+export function wrapAngleDeg(angle: number): number {
+  if (!Number.isFinite(angle)) return 0;
+  const wrapped = ((((angle + 180) % 360) + 360) % 360) - 180;
+  // `((…% 360) + 360) % 360` is in [0, 360); minus 180 lands in
+  // [-180, 180). `-0` normalizes to `0` so skip-guards compare cleanly.
+  return wrapped === 0 ? 0 : wrapped;
+}
+
+/**
+ * Rotate a domain-space triangle soup about the §3 placement center (F024).
+ *
+ * Pure helper for the angle-of-attack commit: per vertex
+ * `p' = C + s·R·(p − C)` with `C = (0.35·nx, ny/2, nz/2)` and
+ * `R = Ry(yaw)·Rz(pitch)·Rx(roll)` (roll applied first, yaw last; angles in
+ * degrees; yaw about +Y, pitch about +Z, roll about +X). Axes verified
+ * against the acceptance triples: yaw +90° maps +X→−Z, pitch +90° maps
+ * +X→+Y, roll +90° maps +Y→+Z.
+ *
+ * Fit correction: when the rotated AABB's longest side `L` exceeds the
+ * placement-size envelope (`0.25·nx`), a uniform `s = (0.25·nx)/L` about `C`
+ * pulls the model back inside (worst case a 45° square plate shrinks by
+ * exactly `1/√2`); otherwise `s = 1` (`min(1, …)` — a yawed thin rod never
+ * grows). The input is never mutated; an empty soup stays empty.
+ *
+ * All-zero orientation returns a verbatim copy (identity rotation + `s = 1`
+ * would otherwise leave 1-ulp `(p−C)+C` round-trip noise, breaking the
+ * rotate-away-and-back bitwise-equality criterion).
+ */
+export function rotateTriangleSoup(
+  soup: Float32Array,
+  dims: GridDims,
+  o: ModelOrientation,
+): Float32Array {
+  const out = new Float32Array(soup.length);
+  if (soup.length === 0) return out;
+  const yaw = (o.yawDeg * Math.PI) / 180;
+  const pitch = (o.pitchDeg * Math.PI) / 180;
+  const roll = (o.rollDeg * Math.PI) / 180;
+  if (yaw === 0 && pitch === 0 && roll === 0) {
+    out.set(soup);
+    return out;
+  }
+  const cx = 0.35 * dims.nx;
+  const cy = dims.ny / 2;
+  const cz = dims.nz / 2;
+  const cosYaw = Math.cos(yaw);
+  const sinYaw = Math.sin(yaw);
+  const cosPitch = Math.cos(pitch);
+  const sinPitch = Math.sin(pitch);
+  const cosRoll = Math.cos(roll);
+  const sinRoll = Math.sin(roll);
+  // Pass 1: center-relative rotation (roll → pitch → yaw), tracking the AABB.
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let minZ = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  let maxZ = Number.NEGATIVE_INFINITY;
+  for (let i = 0; i + 2 < soup.length; i += 3) {
+    const x = (soup[i] ?? 0) - cx;
+    const y = (soup[i + 1] ?? 0) - cy;
+    const z = (soup[i + 2] ?? 0) - cz;
+    // Rx(roll): x untouched.
+    const y1 = cosRoll * y - sinRoll * z;
+    const z1 = sinRoll * y + cosRoll * z;
+    // Rz(pitch).
+    const x2 = cosPitch * x - sinPitch * y1;
+    const y2 = sinPitch * x + cosPitch * y1;
+    // Ry(yaw).
+    const x3 = cosYaw * x2 + sinYaw * z1;
+    const z3 = -sinYaw * x2 + cosYaw * z1;
+    out[i] = x3;
+    out[i + 1] = y2;
+    out[i + 2] = z3;
+    if (x3 < minX) minX = x3;
+    if (y2 < minY) minY = y2;
+    if (z3 < minZ) minZ = z3;
+    if (x3 > maxX) maxX = x3;
+    if (y2 > maxY) maxY = y2;
+    if (z3 > maxZ) maxZ = z3;
+  }
+  const longest = Math.max(maxX - minX, maxY - minY, maxZ - minZ);
+  const limit = 0.25 * dims.nx;
+  // Pass 2: translate back about C, with the fit shrink when over envelope.
+  if (!(longest > limit)) {
+    for (let i = 0; i + 2 < soup.length; i += 3) {
+      out[i] = (out[i] ?? 0) + cx;
+      out[i + 1] = (out[i + 1] ?? 0) + cy;
+      out[i + 2] = (out[i + 2] ?? 0) + cz;
+    }
+    return out;
+  }
+  const s = limit / longest;
+  for (let i = 0; i + 2 < soup.length; i += 3) {
+    out[i] = cx + (out[i] ?? 0) * s;
+    out[i + 1] = cy + (out[i + 1] ?? 0) * s;
+    out[i + 2] = cz + (out[i + 2] ?? 0) * s;
+  }
+  return out;
+}
+
 /** Options for `SimEngine.init` (F021: boot grid + pool target are runtime). */
 export interface SimEngineInit {
   /** Quality tier selecting the boot grid (default `"medium"`). */
@@ -318,6 +427,24 @@ export class SimEngine {
    * Null with no mesh.
    */
   private cachedMesh: { soup: Float32Array; dims: GridDims } | null = null;
+  /**
+   * Committed angle-of-attack orientation (F024). `cachedMesh` stays at
+   * zero orientation forever — every rotation derives from it, so repeated
+   * commits never compound drift. Reset to default by `setMesh`/`clearMesh`
+   * (a new model always starts unrotated).
+   */
+  private appliedOrientation: ModelOrientation = {
+    yawDeg: 0,
+    pitchDeg: 0,
+    rollDeg: 0,
+  };
+  /**
+   * Currently-voxelized (rotated) soup (F024) — what `set_mesh` last baked.
+   * Read via `getAppliedSoup` for display rebuilds; null with no mesh.
+   */
+  private appliedSoup: Float32Array | null = null;
+  /** `MeshResult` of the last voxelization (backs the skip-guard). */
+  private appliedResult: MeshResult | null = null;
   private inletULattice = 0.05;
   private lastConditions: FlowConditions = DEFAULT_CONDITIONS;
   private applied: AppliedConditions = {
@@ -443,6 +570,9 @@ export class SimEngine {
    * quality switch can re-voxelize without the original file bytes.
    * Pointer-affecting call — callers must re-fetch views afterwards (all
    * accessors here create fresh views per call, so nothing goes stale).
+   *
+   * A new model always starts unrotated (F024): the orientation commit is
+   * reset to default and the applied soup is the zero soup itself.
    */
   setMesh(geometry: BufferGeometry): MeshResult {
     const api = this.requireApi();
@@ -465,6 +595,9 @@ export class SimEngine {
       this.surfaceMode = surfaceMode;
       this.skippedTriangles = skippedTriangles;
       this.cachedMesh = { soup: soup.slice(), dims: { ...this.dims } };
+      this.appliedOrientation = { yawDeg: 0, pitchDeg: 0, rollDeg: 0 };
+      this.appliedSoup = soup.slice();
+      this.appliedResult = { solidCount, surfaceMode, skippedTriangles };
       return { solidCount, surfaceMode, skippedTriangles };
     } finally {
       result.free();
@@ -479,6 +612,9 @@ export class SimEngine {
     this.surfaceMode = false;
     this.skippedTriangles = 0;
     this.cachedMesh = null;
+    this.appliedOrientation = { yawDeg: 0, pitchDeg: 0, rollDeg: 0 };
+    this.appliedSoup = null;
+    this.appliedResult = null;
   }
 
   /** Solid cell count from the last `setMesh` (0 with no mesh). */
@@ -508,6 +644,80 @@ export class SimEngine {
     const cached = this.cachedMesh;
     if (!cached) return null;
     return { soup: cached.soup.slice(), dims: { ...cached.dims } };
+  }
+
+  /**
+   * Commit an angle-of-attack orientation (F024): rotate the zero-orientation
+   * `cachedMesh` soup → `set_mesh` (updating solid count / surface mode /
+   * skipped triangles) → `reset_flow()` (engine-owned soft restart, the
+   * viscosity-change precedent). `cachedMesh` itself is never overwritten,
+   * so every commit derives from the same zero soup — no drift. Run/pause
+   * state is untouched (a commit while paused stays paused).
+   *
+   * Skip-guard: when the request equals the applied orientation (and a mesh
+   * is set), the stored result returns with no wasm work and no restart.
+   * Returns null with no mesh (or before init) — callers no-op.
+   */
+  applyOrientation(o: ModelOrientation): MeshResult | null {
+    const api = this.api;
+    const cached = this.cachedMesh;
+    if (!api || !cached) return null;
+    const current = this.appliedOrientation;
+    if (
+      current.yawDeg === o.yawDeg &&
+      current.pitchDeg === o.pitchDeg &&
+      current.rollDeg === o.rollDeg &&
+      this.appliedResult
+    ) {
+      return { ...this.appliedResult };
+    }
+    const rotated = rotateTriangleSoup(cached.soup, cached.dims, o);
+    let result: SetMeshResultHandle;
+    try {
+      result = api.set_mesh(rotated);
+    } catch (err) {
+      throw new AppError(
+        "voxelize-failed",
+        "Voxelization failed — try a simpler model",
+        { cause: err },
+      );
+    }
+    let solidCount = 0;
+    let skippedTriangles = 0;
+    let surfaceMode = false;
+    try {
+      solidCount = Math.max(0, Math.floor(result.solidCount));
+      skippedTriangles = Math.max(0, Math.floor(result.skippedTriangles));
+      surfaceMode = api.surface_mode_flag();
+    } finally {
+      result.free();
+    }
+    this.solidCount = solidCount;
+    this.surfaceMode = surfaceMode;
+    this.skippedTriangles = skippedTriangles;
+    this.appliedOrientation = {
+      yawDeg: o.yawDeg,
+      pitchDeg: o.pitchDeg,
+      rollDeg: o.rollDeg,
+    };
+    this.appliedSoup = rotated;
+    this.appliedResult = { solidCount, surfaceMode, skippedTriangles };
+    // Soft restart owned by the engine (viscosity-change precedent).
+    api.reset_flow();
+    return { ...this.appliedResult };
+  }
+
+  /**
+   * Currently-voxelized (rotated) soup + the grid it lives in (F024), or
+   * null with no mesh. Returns copies — the engine's state stays immutable.
+   * The display layer (`useSimulation`) rebuilds the scene model from this
+   * after an orientation commit; `getMeshSoup` stays zero-orientation for
+   * the rescale math.
+   */
+  getAppliedSoup(): { soup: Float32Array; dims: GridDims } | null {
+    const applied = this.appliedSoup;
+    if (!applied) return null;
+    return { soup: applied.slice(), dims: { ...this.dims } };
   }
 
   // ── conditions API ─────────────────────────────────────────────────────
@@ -629,6 +839,11 @@ export class SimEngine {
    * tier's preset count. Smoke re-seeding rides the context's rake state
    * (the loop's rake-sync effect re-seeds on the clamped values).
    *
+   * F024: the rescale starts from the zero-orientation `cachedMesh` (which
+   * is updated to the rescaled zero soup + new dims, so consecutive
+   * switches stay exact) and the committed `appliedOrientation` is
+   * re-applied on top — orientation survives tier switches.
+   *
    * Pointer-affecting (ARCHITECTURE.md §5): all accessors here create fresh
    * views per call, so nothing goes stale. Adaptive state restarts
    * (`stepsPerFrame` 2, EMA cleared) — the new grid has new timing.
@@ -639,7 +854,6 @@ export class SimEngine {
     const spec: QualitySpec =
       QUALITY_PRESETS[level] ?? QUALITY_PRESETS.medium;
     const nextDims: GridDims = { ...spec.grid };
-    const prevDims: GridDims = { ...this.dims };
     this.quality = spec.level;
     this.dims = nextDims;
     api.init_sim(nextDims.nx, nextDims.ny, nextDims.nz, PARTICLE_CAPACITY);
@@ -664,8 +878,17 @@ export class SimEngine {
     }
     const cached = this.cachedMesh;
     if (cached && cached.soup.length > 0) {
-      const rescaled = rescaleTriangleSoup(cached.soup, prevDims, nextDims);
-      const res = api.set_mesh(rescaled);
+      // Rescale from the soup's own grid (equals the pre-switch dims in the
+      // normal flow; robust across consecutive switches) and keep the
+      // zero-cache in sync with the live grid.
+      const rescaled = rescaleTriangleSoup(cached.soup, cached.dims, nextDims);
+      this.cachedMesh = { soup: rescaled, dims: { ...nextDims } };
+      const rotated = rotateTriangleSoup(
+        rescaled,
+        nextDims,
+        this.appliedOrientation,
+      );
+      const res = api.set_mesh(rotated);
       try {
         this.solidCount = Math.max(0, Math.floor(res.solidCount));
         this.skippedTriangles = Math.max(0, Math.floor(res.skippedTriangles));
@@ -673,10 +896,18 @@ export class SimEngine {
         res.free();
       }
       this.surfaceMode = api.surface_mode_flag();
+      this.appliedSoup = rotated;
+      this.appliedResult = {
+        solidCount: this.solidCount,
+        surfaceMode: this.surfaceMode,
+        skippedTriangles: this.skippedTriangles,
+      };
     } else {
       this.solidCount = 0;
       this.surfaceMode = false;
       this.skippedTriangles = 0;
+      this.appliedSoup = null;
+      this.appliedResult = null;
     }
     api.reset_flow();
     this.particleTarget = spec.particles;

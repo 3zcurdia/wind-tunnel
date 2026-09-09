@@ -14,9 +14,21 @@ const PRESETS: readonly { readonly id: CameraPreset; readonly label: string }[] 
 const BUTTON_CLASS =
   "rounded-md border border-neutral-700 bg-neutral-800/80 px-2.5 py-1 text-xs font-medium text-neutral-100 backdrop-blur-sm hover:bg-neutral-700";
 
+const BUTTON_ACTIVE_CLASS =
+  "rounded-md border border-blue-500 bg-blue-600/80 px-2.5 py-1 text-xs font-medium text-white backdrop-blur-sm hover:bg-blue-500";
+
+const BUTTON_DISABLED_CLASS =
+  "rounded-md border border-neutral-800 bg-neutral-900/80 px-2.5 py-1 text-xs font-medium text-neutral-500 backdrop-blur-sm cursor-not-allowed";
+
 export interface ViewToolbarProps {
   /** Viewport container used as the fullscreen target (F020 §2). */
   readonly fullscreenTargetRef: RefObject<HTMLDivElement | null>;
+  /** Rotate-mode state (F024): active styling while on. */
+  readonly rotateActive?: boolean;
+  /** Toggle rotate mode (F024). */
+  readonly onToggleRotate?: () => void;
+  /** Disabled until the engine is ready and a model is loaded (F024). */
+  readonly rotateDisabled?: boolean;
 }
 
 /**
@@ -26,7 +38,12 @@ export interface ViewToolbarProps {
  * The `CameraPreset` import is type-only so this component never pulls the
  * three.js chunk into the page bundle (`Viewport` loads it `ssr: false`).
  */
-export function ViewToolbar({ fullscreenTargetRef }: ViewToolbarProps) {
+export function ViewToolbar({
+  fullscreenTargetRef,
+  rotateActive = false,
+  onToggleRotate,
+  rotateDisabled = false,
+}: ViewToolbarProps) {
   const { pushToast } = useSimulationContext();
   const [isFullscreen, setIsFullscreen] = useState(false);
 
@@ -90,6 +107,24 @@ export function ViewToolbar({ fullscreenTargetRef }: ViewToolbarProps) {
           {preset.label}
         </button>
       ))}
+      <button
+        type="button"
+        onClick={() => {
+          onToggleRotate?.();
+        }}
+        disabled={rotateDisabled}
+        aria-pressed={rotateActive}
+        title="Rotate model (angle of attack)"
+        className={
+          rotateDisabled
+            ? BUTTON_DISABLED_CLASS
+            : rotateActive
+              ? BUTTON_ACTIVE_CLASS
+              : BUTTON_CLASS
+        }
+      >
+        ⟳ Rotate
+      </button>
       <button
         type="button"
         onClick={captureScreenshot}

@@ -4,6 +4,7 @@ import {
   Color,
   DirectionalLight,
   EdgesGeometry,
+  Euler,
   FogExp2,
   GridHelper,
   Group,
@@ -15,6 +16,7 @@ import {
   MeshBasicMaterial,
   MeshStandardMaterial,
   PerspectiveCamera,
+  Quaternion,
   Scene,
   Spherical,
   SRGBColorSpace,
@@ -23,6 +25,7 @@ import {
 } from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { AppError } from "@/lib/sim/errors";
+import type { ModelOrientation } from "@/lib/sim/ModelContext";
 import type { GridDims } from "@/lib/sim/quality";
 import { DOMAIN } from "@/lib/sim/types";
 import { VoxelDebugView } from "./VoxelDebugView";
@@ -186,6 +189,14 @@ export class SceneManager {
     }
   };
   private modelMesh: Mesh | null = null;
+  /**
+   * Rotation pivot seating the model (F024): `showModel` bakes the
+   * world-space geometry centered on its own bbox center and parks that
+   * center in `pivot.position`, so `previewModelOrientation` can spin the
+   * model about its center without touching solver state. Null with no
+   * model; disposed together with the mesh by `clearModel`.
+   */
+  private modelPivot: Group | null = null;
   private voxelView: VoxelDebugView | null = null;
   private voxelVisible = false;
 
@@ -302,6 +313,13 @@ export class SceneManager {
    * The input geometry is cloned and mapped to world space
    * (world = (lattice − domainCenter) · 0.1); the caller's copy is untouched
    * so it stays usable for voxelization. Replaces any previous model cleanly.
+   *
+   * F024: the baked geometry is centered on its own world bbox center and
+   * seated inside a fresh identity `modelPivot` parked at that center — an
+   * identity pivot renders pixel-identical to the unpivoted mesh, and the
+   * orbit target lands on the same world point as before. A commit's
+   * `showModel` therefore also clears any preview rotation with no explicit
+   * un-preview call.
    */
   showModel(geometry: BufferGeometry): void {
     this.clearModel();
@@ -317,6 +335,10 @@ export class SceneManager {
     );
     matrix.setPosition(offset.x, offset.y, offset.z);
     world.applyMatrix4(matrix);
+    world.computeBoundingBox();
+    const center =
+      world.boundingBox?.getCenter(new Vector3()) ?? new Vector3();
+    world.translate(-center.x, -center.y, -center.z);
     const material = new MeshStandardMaterial({
       color: "#9ca3af",
       metalness: 0.1,
@@ -324,25 +346,34 @@ export class SceneManager {
       flatShading: true,
     });
     const mesh = new Mesh(world, material);
+    const pivot = new Group();
+    pivot.name = "modelPivot";
+    pivot.position.copy(center);
+    pivot.add(mesh);
+    this.modelPivot = pivot;
     this.modelMesh = mesh;
-    this.getLayer("meshModel").add(mesh);
+    this.getLayer("meshModel").add(pivot);
 
-    world.computeBoundingBox();
-    const center = world.boundingBox?.getCenter(new Vector3());
-    if (center) {
-      const offset = this.camera.position.clone().sub(this.controls.target);
-      this.controls.target.copy(center);
-      this.camera.position.copy(center).add(offset);
-      this.controls.update();
-    }
+    const offsetFromTarget = this.camera.position
+      .clone()
+      .sub(this.controls.target);
+    this.controls.target.copy(center);
+    this.camera.position.copy(center).add(offsetFromTarget);
+    this.controls.update();
   }
 
   /** Remove the current model, if any, and release its GPU resources. */
   clearModel(): void {
+    const pivot = this.modelPivot;
     const mesh = this.modelMesh;
+    this.modelPivot = null;
     this.modelMesh = null;
+    if (pivot) {
+      pivot.removeFromParent();
+    } else {
+      mesh?.removeFromParent();
+    }
     if (!mesh) return;
-    mesh.removeFromParent();
     mesh.geometry.dispose();
     const material = mesh.material;
     if (Array.isArray(material)) {
@@ -350,6 +381,96 @@ export class SceneManager {
     } else {
       material.dispose();
     }
+  }
+
+  /**
+   * `R = Ry(yaw)·Rz(pitch)·Rx(roll)` composed explicitly (no Euler-order
+   * ambiguity) — the same composition `rotateTriangleSoup` hand-rolls, so
+   * preview and commit agree (F024).
+   */
+  private static orientationMatrix(o: ModelOrientation): Matrix4 {
+    const matrix = new Matrix4().makeRotationY((o.yawDeg * Math.PI) / 180);
+    matrix.multiply(new Matrix4().makeRotationZ((o.pitchDeg * Math.PI) / 180));
+    matrix.multiply(new Matrix4().makeRotationX((o.rollDeg * Math.PI) / 180));
+    return matrix;
+  }
+
+  /**
+   * Preview an angle-of-attack orientation on the live pivot (F024): sets
+   * the pivot quaternion to `R(o)·R(baked)⁻¹` — the rotation *relative to*
+   * the orientation already baked into the display geometry by the last
+   * commit's `showModel`. Passing the committed orientation as `baked` is
+   * what keeps a second drag from double-rotating (the pivot spinning an
+   * already-rotated mesh) and snapping back on release. With `o === baked`
+   * the pivot is identity. No fit correction — the commit bakes the
+   * corrected rotation into fresh geometry instead. Preview-only: no solver
+   * calls, no geometry writes. No-op without a model. The lattice→world map
+   * is uniform scale + translation with no axis swap (F005), so a
+   * world-axis spin about the world center is the exact image of the
+   * domain-space rotation.
+   */
+  previewModelOrientation(o: ModelOrientation, baked: ModelOrientation): void {
+    const pivot = this.modelPivot;
+    if (!pivot || !this.modelMesh) return;
+    const next = new Quaternion().setFromRotationMatrix(
+      SceneManager.orientationMatrix(o),
+    );
+    const bakedQ = new Quaternion().setFromRotationMatrix(
+      SceneManager.orientationMatrix(baked),
+    );
+    pivot.quaternion.copy(next.multiply(bakedQ.invert()));
+  }
+
+  /**
+   * Turn a screen-space rotation gesture into a new orientation (F024):
+   * `horizDeg` spins about the camera's up axis (drag/arrow right → the
+   * model's near face moves right on screen), `vertDeg` about the camera's
+   * right axis (down → near face moves down), `spinDeg` about the view axis
+   * (clockwise on screen for positive input). The world-frame delta
+   * quaternion premultiplies `R(current)` and the result is decomposed back
+   * to yaw/pitch/roll via Euler order `YZX` (three.js `Ry·Rz·Rx` — the F024
+   * composition), so the returned triple feeds `rotateTriangleSoup`
+   * unchanged. The camera never moves; angles are unwrapped degrees
+   * (`ModelContext.setOrientation` wraps).
+   */
+  rotateOrientationInView(
+    current: ModelOrientation,
+    delta: { horizDeg?: number; vertDeg?: number; spinDeg?: number },
+  ): ModelOrientation {
+    const rad = Math.PI / 180;
+    const camQ = this.camera.quaternion;
+    const up = new Vector3(0, 1, 0).applyQuaternion(camQ);
+    const right = new Vector3(1, 0, 0).applyQuaternion(camQ);
+    const forward = new Vector3(0, 0, -1).applyQuaternion(camQ);
+    const q = new Quaternion()
+      .setFromAxisAngle(up, (delta.horizDeg ?? 0) * rad)
+      .multiply(
+        new Quaternion().setFromAxisAngle(right, (delta.vertDeg ?? 0) * rad),
+      )
+      .multiply(
+        new Quaternion().setFromAxisAngle(forward, (delta.spinDeg ?? 0) * rad),
+      )
+      .multiply(
+        new Quaternion().setFromRotationMatrix(
+          SceneManager.orientationMatrix(current),
+        ),
+      );
+    const euler = new Euler().setFromQuaternion(q, "YZX");
+    const deg = 180 / Math.PI;
+    return {
+      yawDeg: euler.y * deg,
+      pitchDeg: euler.z * deg,
+      rollDeg: euler.x * deg,
+    };
+  }
+
+  /**
+   * Gate OrbitControls rotation (F024): rotate mode disables orbit-rotate
+   * while active (pan/zoom stay live); exiting restores it. SceneManager
+   * stays stateless about *why*.
+   */
+  setOrbitRotateEnabled(on: boolean): void {
+    this.controls.enableRotate = on;
   }
 
   /**

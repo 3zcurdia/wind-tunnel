@@ -8,6 +8,7 @@ import { StatsPanel } from "@/components/controls/StatsPanel";
 import { Toasts } from "@/components/ui/Toast";
 import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 import ViewportMount from "@/components/viewport/ViewportMount";
+import { RotateController } from "@/components/viewport/RotateController";
 import { ViewToolbar } from "@/components/viewport/ViewToolbar";
 import { getSceneManager } from "@/components/viewport/viewportBridge";
 import type { SceneManager } from "@/components/viewport/SceneManager";
@@ -186,10 +187,24 @@ function ControlsRail() {
 
 function ViewportPane() {
   const { ready, error } = useSimulationContext();
+  const { file, sample, meta } = useModel();
+  // Rotate toggle gate (F024): a model counts as loaded once the pipeline
+  // recorded its counts (same rule as the controls rail below).
+  const hasModel = (file !== null || sample !== null) && meta !== undefined;
   // F020 fullscreen target: the container, so the toolbar rides along.
   const viewportRef = useRef<HTMLDivElement | null>(null);
   // F022 §6: ErrorBoundary Reset remounts the viewport through this key.
   const [viewportKey, setViewportKey] = useState(0);
+  // F024 rotate mode: local to the pane; the controller mounts only while
+  // active. Losing the model (clear / new upload resetting `meta`) exits
+  // via render-time adjustment (re-renders immediately — no effect needed,
+  // and a stale `true` can never re-arm orbit-gating behind the user's
+  // back when the next model lands).
+  const [rotateMode, setRotateMode] = useState(false);
+  if (rotateMode && !hasModel) {
+    setRotateMode(false);
+  }
+  const rotateActive = rotateMode && hasModel;
 
   return (
     <div
@@ -217,7 +232,20 @@ function ViewportPane() {
           ) : null}
         </div>
       ) : null}
-      <ViewToolbar fullscreenTargetRef={viewportRef} />
+      <ViewToolbar
+        fullscreenTargetRef={viewportRef}
+        rotateActive={rotateActive}
+        onToggleRotate={() => {
+          if (ready && hasModel) setRotateMode((active) => !active);
+        }}
+        rotateDisabled={!ready || !hasModel}
+      />
+      {rotateActive ? (
+        <RotateController
+          containerRef={viewportRef}
+          onExit={() => setRotateMode(false)}
+        />
+      ) : null}
     </div>
   );
 }
