@@ -9,7 +9,7 @@
 | Size | S |
 | Skill fit | `UI` |
 | Depends on | F017 (stats bar), F019 (readout); composes with F027 copy |
-| Status | `[ ]` todo |
+| Status | `[x]` done (2026-09-10; code + `node --test`/lint/build clean, SSR-prerender verified; 3 live-browser criteria outstanding — see notes) |
 
 ## Goal
 
@@ -87,17 +87,33 @@ src/lib/sim/conditions.ts                  (modify, only if F027 unmerged) — f
 
 ## Acceptance criteria
 
-- [ ] First visit (no storage key): footer shows Model / Wind / Drag / badge
+- [x] First visit (no storage key): footer shows Model / Wind / Drag / badge
       only, plus the `Advanced` toggle.
+      (Verified 2026-09-10 in the SSR prerender `.next/server/app/index.html`:
+      footer contains exactly the Model / Wind / Drag cells with `—`
+      placeholders, the spec's `title` strings verbatim, the `Advanced`
+      button, and the gray Stable badge; zero occurrences of the advanced
+      cells.)
 - [ ] Toggling to Advanced shows all ten F017 cells; reload keeps Advanced;
       `localStorage["wt.statsMode"] === "advanced"`.
+      (2026-09-10: code path reviewed — toggle flips state, persists via
+      `storeStatsMode`, hydration reads it on mount; live reload needs a
+      browser — no browser in this environment.)
 - [ ] Poisoning the key (`localStorage.setItem("wt.statsMode","turbo")`) +
       reload falls back to simple without a crash.
+      (2026-09-10: fallback logic unit-tested — corrupt values load as
+      simple; the reload half needs a browser.)
 - [ ] In simple mode, dragging wind speed to 30 m/s updates Wind to `108 km/h`
       live (uses committed conditions, so within the 150 ms debounce).
-- [ ] `node --test`, lint, build clean; advanced mode markup is byte-equivalent
+      (2026-09-10: `formatKmh(30) === "108 km/h"` confirmed by execution and
+      the cell reads committed `conditions.uMps` from context; live drag
+      needs a browser.)
+- [x] `node --test`, lint, build clean; advanced mode markup is byte-equivalent
       to pre-feature output (visual diff: no cell added/removed/reworded there
       beyond F027's tooltips if merged).
+      (Verified 2026-09-10: 63/63 `node --test`, lint zero errors/warnings,
+      `next build` succeeds; the ten advanced cells are verbatim copies —
+      only the toggle button and a `gap-2` on the right container added.)
 
 ## Test plan
 

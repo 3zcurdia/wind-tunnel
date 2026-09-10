@@ -1141,3 +1141,35 @@ CONVENTIONS.md).
    a sample fully simulated. Uploaded files are unaffected. Reported in the
    F026 final report; a one-line `sample`-aware fix belongs to a follow-up
    touching `SimulationContext.tsx`.
+
+## 2026-09-10 — F029 (simple stats mode)
+
+Verification for this entry: `node --test` 63/63 pass across
+`statsMode` (9 new), `conditions`, `types`, `quality`; `npm run lint` zero
+errors/warnings; `npm run build` succeeds (no wasm stub needed — the stats
+bar prerenders SSR-safe); `cargo test` not run (no Rust files touched —
+waived per CONVENTIONS.md). No browser available in this environment, so
+criteria 2–4 (toggle persistence across reload, poisoned-key reload, live
+wind-speed tracking) are verified by code-path + unit only — see the spec's
+open notes.
+
+1. **Spec §2's `useEffect` hydration pattern vs the
+   `react-hooks/set-state-in-effect` lint error.** The spec mandates
+   `useState(DEFAULT)` + `useEffect(() => setMode(load()), [])` so the
+   server and first client paint both render simple (a lazy `useState(() =>
+   load())` initializer would read `advanced` during hydration and mismatch
+   the SSR HTML). The code follows the spec verbatim; DoD lint-cleanliness
+   is kept via a single targeted `eslint-disable-next-line` with a
+   justification comment. Placement note for future edits: the rule reports
+   on the `setMode(...)` line, so the directive must sit directly above it
+   *inside* the effect body — above the `useEffect` line it is unused (and
+   itself warns) while the error remains.
+2. **`conditions.ts` was not modified.** Spec §2's `formatKmh` fallback
+   ("if F027 is unmerged") did not trigger — F027 is merged and
+   `formatKmh(30) === "108 km/h"` is confirmed, covering criterion 4's
+   example value.
+3. **Noted, not fixed (outside F029's file list): the F026 §3 placeholder
+   issue applies to simple mode too.** With a sample model loaded,
+   `readout.modelName` stays null, so simple mode shows `—` for Model/Wind/
+   Drag just like the advanced bar does. Same one-line `sample`-aware
+   `SimulationContext.tsx` follow-up would fix both.

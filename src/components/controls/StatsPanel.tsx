@@ -1,6 +1,14 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { useSimulationContext } from "@/lib/sim/SimulationContext";
+import { formatKmh } from "@/lib/sim/conditions";
+import {
+  DEFAULT_STATS_MODE,
+  loadStoredStatsMode,
+  storeStatsMode,
+  type StatsMode,
+} from "@/lib/sim/statsMode";
 import {
   DOMAIN,
   READOUT_PLACEHOLDER,
@@ -50,7 +58,15 @@ function StatCell({
  * SSR-safe: renders placeholders until the first client-side poll resolves.
  */
 export function StatsPanel() {
-  const { readout, conditionsUnstable } = useSimulationContext();
+  const { readout, conditions, conditionsUnstable } = useSimulationContext();
+  const [mode, setMode] = useState<StatsMode>(DEFAULT_STATS_MODE);
+  // F029: intentional client-only hydration from localStorage. Server and
+  // first client paint render simple (SSR-safe); the stored mode applies
+  // after mount, avoiding a hydration mismatch.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setMode(loadStoredStatsMode());
+  }, []);
 
   // Empty state (spec §4): no model or no run yet → every metric "—" except
   // the grid dims (from DOMAIN) and a gray STABLE badge.
@@ -70,77 +86,119 @@ export function StatsPanel() {
       aria-label="Live simulation statistics"
       className="flex h-full items-stretch overflow-x-auto font-mono"
     >
-      <StatCell
-        label="Model"
-        value={modelValue}
-        title={
-          modelName === null
-            ? "No model loaded — upload an OBJ or PLY file"
-            : `${modelName} · ${formatTriangles(modelTriangles)} triangles`
-        }
-      />
-      <StatCell
-        label="FPS"
-        value={empty ? READOUT_PLACEHOLDER : formatInt(readout.fps)}
-        title="Display refresh rate in frames per second (not simulation steps)"
-      />
-      <StatCell
-        label="Steps/s"
-        value={empty ? READOUT_PLACEHOLDER : formatInt(readout.stepsPerSecond)}
-        title="Lattice steps computed per second (FPS × steps-per-frame)"
-      />
-      <StatCell
-        label="Cd (confined)"
-        value={empty ? READOUT_PLACEHOLDER : formatCd(readout.cd)}
-        title="Drag score for comparing shapes in this tunnel — lower is sleeker. Not comparable to textbook Cd values (walls and coarse grid inflate it)."
-      />
-      <StatCell
-        label="Drag"
-        value={
-          empty
-            ? READOUT_PLACEHOLDER
-            : withUnit(formatDragN(readout.dragN), "N")
-        }
-        title="Drag force in newtons (momentum-exchange, EMA-smoothed)"
-      />
-      <StatCell
-        label="P min"
-        value={
-          empty
-            ? READOUT_PLACEHOLDER
-            : withUnit(formatKPa(readout.pMinPa), "kPa")
-        }
-        title={`Minimum surface pressure (stagnation reference q ≈ ${formatKPa(readout?.qRefPa ?? Number.NaN)} kPa)`}
-      />
-      <StatCell
-        label="P max"
-        value={
-          empty
-            ? READOUT_PLACEHOLDER
-            : withUnit(formatKPa(readout.pMaxPa), "kPa")
-        }
-        title={`Maximum surface pressure (stagnation reference q ≈ ${formatKPa(readout?.qRefPa ?? Number.NaN)} kPa)`}
-      />
-      <StatCell
-        label="Re (nominal)"
-        value={empty ? READOUT_PLACEHOLDER : formatRe(readout.re)}
-        title={
-          conditionsUnstable
-            ? "Nominal Reynolds number U·L/ν from the physical conditions. Stability assist is active, so the solver runs on assist viscosity — the effective simulated Re is far lower (laminar regime)."
-            : "Nominal Reynolds number U·L/ν from the current physical conditions — the lattice may resolve a lower effective Re."
-        }
-      />
-      <StatCell
-        label="Grid"
-        value={`${gridDims[0]}×${gridDims[1]}×${gridDims[2]}`}
-        title="Lattice grid dimensions in cells (X×Y×Z)"
-      />
-      <StatCell
-        label="Particles"
-        value={empty ? READOUT_PLACEHOLDER : formatInt(readout.activeParticles)}
-        title="Live particles in the simulation pool"
-      />
-      <div className="ml-auto flex shrink-0 items-center pl-3">
+      {mode === "simple" ? (
+        <>
+          <StatCell
+            label="Model"
+            value={modelValue}
+            title={
+              modelName === null
+                ? "No model loaded — upload an OBJ or PLY file"
+                : `${modelName} · ${formatTriangles(modelTriangles)} triangles`
+            }
+          />
+          <StatCell
+            label="Wind"
+            value={empty ? READOUT_PLACEHOLDER : formatKmh(conditions.uMps)}
+            title="Wind speed at the tunnel inlet"
+          />
+          <StatCell
+            label="Drag"
+            value={
+              empty
+                ? READOUT_PLACEHOLDER
+                : withUnit(formatDragN(readout.dragN), "N")
+            }
+            title="Force the air pushes back with — one newton is about the weight of an apple"
+          />
+        </>
+      ) : (
+        <>
+          <StatCell
+            label="Model"
+            value={modelValue}
+            title={
+              modelName === null
+                ? "No model loaded — upload an OBJ or PLY file"
+                : `${modelName} · ${formatTriangles(modelTriangles)} triangles`
+            }
+          />
+          <StatCell
+            label="FPS"
+            value={empty ? READOUT_PLACEHOLDER : formatInt(readout.fps)}
+            title="Display refresh rate in frames per second (not simulation steps)"
+          />
+          <StatCell
+            label="Steps/s"
+            value={empty ? READOUT_PLACEHOLDER : formatInt(readout.stepsPerSecond)}
+            title="Lattice steps computed per second (FPS × steps-per-frame)"
+          />
+          <StatCell
+            label="Cd (confined)"
+            value={empty ? READOUT_PLACEHOLDER : formatCd(readout.cd)}
+            title="Drag score for comparing shapes in this tunnel — lower is sleeker. Not comparable to textbook Cd values (walls and coarse grid inflate it)."
+          />
+          <StatCell
+            label="Drag"
+            value={
+              empty
+                ? READOUT_PLACEHOLDER
+                : withUnit(formatDragN(readout.dragN), "N")
+            }
+            title="Drag force in newtons (momentum-exchange, EMA-smoothed)"
+          />
+          <StatCell
+            label="P min"
+            value={
+              empty
+                ? READOUT_PLACEHOLDER
+                : withUnit(formatKPa(readout.pMinPa), "kPa")
+            }
+            title={`Minimum surface pressure (stagnation reference q ≈ ${formatKPa(readout?.qRefPa ?? Number.NaN)} kPa)`}
+          />
+          <StatCell
+            label="P max"
+            value={
+              empty
+                ? READOUT_PLACEHOLDER
+                : withUnit(formatKPa(readout.pMaxPa), "kPa")
+            }
+            title={`Maximum surface pressure (stagnation reference q ≈ ${formatKPa(readout?.qRefPa ?? Number.NaN)} kPa)`}
+          />
+          <StatCell
+            label="Re (nominal)"
+            value={empty ? READOUT_PLACEHOLDER : formatRe(readout.re)}
+            title={
+              conditionsUnstable
+                ? "Nominal Reynolds number U·L/ν from the physical conditions. Stability assist is active, so the solver runs on assist viscosity — the effective simulated Re is far lower (laminar regime)."
+                : "Nominal Reynolds number U·L/ν from the current physical conditions — the lattice may resolve a lower effective Re."
+            }
+          />
+          <StatCell
+            label="Grid"
+            value={`${gridDims[0]}×${gridDims[1]}×${gridDims[2]}`}
+            title="Lattice grid dimensions in cells (X×Y×Z)"
+          />
+          <StatCell
+            label="Particles"
+            value={empty ? READOUT_PLACEHOLDER : formatInt(readout.activeParticles)}
+            title="Live particles in the simulation pool"
+          />
+        </>
+      )}
+      <div className="ml-auto flex shrink-0 items-center gap-2 pl-3">
+        <button
+          type="button"
+          onClick={() => {
+            const next: StatsMode =
+              mode === "simple" ? "advanced" : "simple";
+            setMode(next);
+            storeStatsMode(next);
+          }}
+          className="rounded border border-neutral-700 px-2 py-0.5 text-[10px] font-medium text-neutral-400 hover:bg-neutral-800"
+        >
+          {mode === "simple" ? "Advanced" : "Simple"}
+        </button>
         {empty || stable ? (
           <span
             title={
