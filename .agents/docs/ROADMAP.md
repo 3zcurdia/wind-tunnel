@@ -20,7 +20,8 @@ surface — with live tuning of wind speed, air pressure, and viscosity.
 | M2 — Solver Core | LBM solver produces a stable flow field; sampling/pressure/stats APIs exist | F007–F013 |
 | M3 — Visualization (v1 usable) | Particles, heatmap, smoke, stats, and control panel all wired and live | F014–F020 |
 | M4 — Hardened v1 | Presets, edge cases, sample models; project is demo-ready | F021–F023 |
-| M5 — Post-v1 interaction | In-viewport model rotation (angle-of-attack control) | F024– |
+| M5 — Post-v1 interaction | In-viewport model rotation (angle-of-attack control) | F024 |
+| M6 — UX for non-experts | Two-step rails, scenario presets, plain-language copy, live first paint, simple stats | F025–F029 |
 
 ---
 
@@ -76,6 +77,19 @@ F003 and can proceed while Phase 1 UI work happens.
 ### Phase 7 — Post-v1 Interaction
 
 - [x] [F024 — Viewport model rotation (angle of attack)](features/F024-viewport-model-rotation.md) — `M` `UI/3D` (rev 2 2026-09-09: camera-relative gestures + arrow-key/button stepping + snap-back fix; rev 1 2026-09-08. Visual/browser criteria need a browser — see spec notes)
+
+### Phase 8 — UX for non-experts
+
+Ordering: F025 first (it moves components the others touch). F026 depends on
+F025; F027/F028/F029 are independent of each other and can run in parallel
+after F025 lands (F027 and F026 both edit `ControlPanel.tsx` — sequence them
+to avoid conflicts). All five are TypeScript/UI only — no wasm, no ABI changes.
+
+- [ ] [F025 — Two-step rails (Load & set up / Tune & run)](features/F025-two-step-rails.md) — `S` `UI`
+- [ ] [F026 — Flow scenario presets (one-click conditions)](features/F026-flow-presets.md) — `S` `UI/logic`
+- [ ] [F027 — Plain-language pass (dual units, altitude, friendly warnings)](features/F027-plain-language-pass.md) — `S` `UI`
+- [ ] [F028 — Live first paint (auto-load a sample at boot)](features/F028-auto-sample-boot.md) — `XS` `glue`
+- [ ] [F029 — Simple stats mode (hero numbers for non-experts)](features/F029-simple-stats-mode.md) — `S` `UI`
 
 ---
 
