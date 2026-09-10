@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { AutoSampleBoot } from "@/components/controls/AutoSampleBoot";
 import { SampleGallery } from "@/components/controls/SampleGallery";
 import { UploadPanel } from "@/components/controls/UploadPanel";
 import { ControlPanel } from "@/components/controls/ControlPanel";
@@ -316,6 +317,7 @@ export default function Home() {
     <ModelProvider>
       <SimulationProvider key={engineAttempt}>
         <SimulationLoopHost />
+        <AutoSampleBoot />
         <Shell onEngineRetry={() => setEngineAttempt((n) => n + 1)} />
       </SimulationProvider>
     </ModelProvider>

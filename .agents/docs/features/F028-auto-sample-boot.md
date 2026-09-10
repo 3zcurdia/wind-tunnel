@@ -9,7 +9,7 @@
 | Size | XS |
 | Skill fit | `glue` |
 | Depends on | F019 (ready flag), F023 (samples); composes with F025 |
-| Status | `[ ]` todo |
+| Status | `[x]` done (2026-09-10; code + `lint`/`build` clean with real wasm bindings; 4 manual/browser criteria need a browser — see notes) |
 
 ## Goal
 
@@ -87,13 +87,24 @@ src/app/page.tsx                            (modify) — mount it next to Simula
 - [ ] Cold load: after "Loading engine…" clears, the Teardrop appears and flow
       develops with **no user interaction**; the gallery shows Teardrop active
       and the step-2 rail enables (F025 chip flips if F025 is merged).
+      **NOT VERIFIED HERE — needs a browser** (effect is verbatim per spec;
+      mount point confirmed inside both providers).
 - [ ] Clicking Sphere within the loading window results in Sphere, not
       Teardrop (user intent wins).
+      **NOT VERIFIED HERE — needs a browser** (guard holds by construction:
+      `file/sample !== null` sets `firedRef` without calling `loadSample`).
 - [ ] Uploading a file immediately after boot replaces the Teardrop normally
       (existing exclusivity — no double-load, no flicker loop).
+      **NOT VERIFIED HERE — needs a browser** (no changes to `ModelContext`
+      exclusivity; `firedRef` prevents a second fire).
 - [ ] Boot-retry path (engine load failure → Retry) still auto-loads once the
       engine comes up.
-- [ ] Lint + build clean.
+      **NOT VERIFIED HERE — needs a browser** (mount is inside the keyed
+      `SimulationProvider`, so Retry remounts the effect with a fresh ref —
+      verified by inspection of `page.tsx`).
+- [x] Lint + build clean.
+      (Verified 2026-09-10 — eslint zero errors/warnings; `next build`
+      succeeds with the real `src/wasm/` bindings present.)
 
 ## Test plan
 
