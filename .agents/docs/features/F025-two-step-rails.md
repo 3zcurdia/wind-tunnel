@@ -9,7 +9,7 @@
 | Size | S |
 | Skill fit | `UI` |
 | Depends on | F018, F019, F020, F021, F023 (all shipped) |
-| Status | `[ ]` todo |
+| Status | `[x]` done (2026-09-10; code + headless Playwright verification — 30/30 layout/step/quality checks pass. Build verified with a temporary generated-wasm stub; `npm run wasm:build` artifacts are absent and wasm-pack/cargo are unavailable in the verification environment) |
 
 ## Goal
 
@@ -106,22 +106,53 @@ src/app/page.tsx                            (modify) — ControlsRail → SetupR
 
 ## Acceptance criteria
 
-- [ ] Viewport is flanked: samples/upload/quality on the left, flow controls on
+- [x] Viewport is flanked: samples/upload/quality on the left, flow controls on
       the right; nothing lost (every section from the old rail appears exactly once).
-- [ ] With no model loaded: left chip is blue ("1" active), right chip is gray,
+      (Verified 2026-09-10 headless — Playwright: 3-column `main` with w-72 /
+      flex-1 / w-80 widths; Samples, Model, Tunnel (Quality) in the left rail,
+      Tunnel controls in the right; Flow/Derived/Particles/Smoke/Layers/
+      Transport all present exactly once.)
+- [x] With no model loaded: left chip is blue ("1" active), right chip is gray,
       right rail shows the hint line and renders at `opacity-60`; transport
       buttons still work (empty-tunnel demo flow preserved).
-- [ ] After clicking a sample: right chip turns blue, left chip gray, hint line
+      (Verified 2026-09-10 headless — chip classes `bg-blue-600` /
+      `bg-neutral-800`, hint line present, one `div.opacity-60`, Run/Pause
+      toggles both ways while the fieldset is disabled.)
+- [x] After clicking a sample: right chip turns blue, left chip gray, hint line
       gone, opacity restored, all sliders enabled.
-- [ ] Quality Apply/Cancel flow works identically from its new home (stage a
+      (Verified 2026-09-10 headless — clicked Sphere: chips flip, hint count 0,
+      `opacity-60` count 0, fieldset enabled, every range input enabled.)
+- [x] Quality Apply/Cancel flow works identically from its new home (stage a
       tier → amber confirm → Apply re-inits engine).
-- [ ] `npm run lint` and `npm run build` clean; no changes under `src/lib/`.
+      (Verified 2026-09-10 headless — segmented control in the left rail:
+      staging turns the target amber with the confirm box; Cancel drops it;
+      Apply selects the tier and the spec note matches the new grid.)
+- [x] `npm run lint` and `npm run build` clean; no changes under `src/lib/`.
+      (Verified 2026-09-10 — eslint zero errors/warnings; `next build` succeeds
+      with a temporary gitignored `src/wasm/windtunnel` stub because the
+      generated bindings (and wasm-pack/cargo) are absent in this environment;
+      no TS/JSX errors in the changed files. The stub was deleted after the
+      run; `src/lib/` untouched.)
 
 ## Test plan
 
 - Manual: run the F023 demo script steps 1–2 and 9 — they must still pass with
   the new layout (quality switch now on the left rail).
+  (Verified 2026-09-10 headless with a temporary wasm stub: step 1 the shell
+  boots with the tunnel; step 2 clicking Sphere flips the rails and shows the
+  body in the viewport; step 9 the Low/High switch stages, confirms, and
+  re-inits from the left rail. Live flow/particles need real wasm — see the
+  open item below.)
 - Manual: shrink the window height — both rails scroll independently.
+  (Verified 2026-09-10 headless at 1440×600: both rails `overflow-y: auto`
+  with independent scrollTop.)
+
+## Open item for the user
+
+- End-to-end check with real bindings (`npm run wasm:build`) was not possible
+  here: `src/wasm/` is absent and wasm-pack/cargo are not installed. Once
+  built, re-check the demo script with a real simulation (particles flowing,
+  heatmap painting) — the layout itself was verified headlessly.
 
 ## Out of scope
 

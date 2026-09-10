@@ -85,7 +85,7 @@ F025; F027/F028/F029 are independent of each other and can run in parallel
 after F025 lands (F027 and F026 both edit `ControlPanel.tsx` — sequence them
 to avoid conflicts). All five are TypeScript/UI only — no wasm, no ABI changes.
 
-- [ ] [F025 — Two-step rails (Load & set up / Tune & run)](features/F025-two-step-rails.md) — `S` `UI`
+- [x] [F025 — Two-step rails (Load & set up / Tune & run)](features/F025-two-step-rails.md) — `S` `UI` (2026-09-10; code + headless Playwright verification — 30/30 checks, rails scroll independently. `next build` verified with a temporary generated-wasm stub; wasm-pack/cargo absent in this environment — see spec's open item)
 - [ ] [F026 — Flow scenario presets (one-click conditions)](features/F026-flow-presets.md) — `S` `UI/logic`
 - [ ] [F027 — Plain-language pass (dual units, altitude, friendly warnings)](features/F027-plain-language-pass.md) — `S` `UI`
 - [ ] [F028 — Live first paint (auto-load a sample at boot)](features/F028-auto-sample-boot.md) — `XS` `glue`

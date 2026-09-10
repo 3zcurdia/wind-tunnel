@@ -4,7 +4,10 @@ import { useEffect, useRef, useState } from "react";
 import { SampleGallery } from "@/components/controls/SampleGallery";
 import { UploadPanel } from "@/components/controls/UploadPanel";
 import { ControlPanel } from "@/components/controls/ControlPanel";
+import { QualitySection } from "@/components/controls/QualitySection";
+import { StepHeader } from "@/components/controls/StepHeader";
 import { StatsPanel } from "@/components/controls/StatsPanel";
+import { Panel } from "@/components/ui/Panel";
 import { Toasts } from "@/components/ui/Toast";
 import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 import ViewportMount from "@/components/viewport/ViewportMount";
@@ -164,23 +167,55 @@ function ContextLostOverlay() {
   );
 }
 
-function ControlsRail() {
+/**
+ * Step 1 rail (F025): sample gallery, upload, and quality — the tunnel
+ * setup flow. The header chip is active until a model lands (step 2 becomes
+ * the active side).
+ */
+function SetupRail() {
+  const { file, sample, meta } = useModel();
+  const hasModel = (file !== null || sample !== null) && meta !== undefined;
+
+  return (
+    <div className="w-72 shrink-0 space-y-4 overflow-y-auto pr-1">
+      <StepHeader step={1} label="Load & set up" active={!hasModel} />
+      <SampleGallery />
+      <UploadPanel />
+      <Panel title="Tunnel">
+        <QualitySection />
+      </Panel>
+    </div>
+  );
+}
+
+/**
+ * Step 2 rail (F025): live flow controls. Visually dimmed with a hint until
+ * a model exists; transport stays functional so the empty-tunnel demo flow
+ * is preserved (the fieldset only disables the tuning inputs).
+ */
+function TuneRail() {
   const sim = useSimulationContext();
   const { file, sample, meta } = useModel();
   const hasModel = (file !== null || sample !== null) && meta !== undefined;
 
   return (
-    <div className="w-80 shrink-0 space-y-4 overflow-y-auto pr-1">
-      <SampleGallery />
-      <UploadPanel />
-      <ControlPanel
-        conditions={sim.conditions}
-        setConditions={sim.setConditions}
-        transport={sim.transport}
-        controlsDisabled={!sim.ready || !hasModel}
-        conditionsUnstable={sim.conditionsUnstable}
-        engineError={sim.error}
-      />
+    <div className="w-80 shrink-0 space-y-4 overflow-y-auto pl-1">
+      <StepHeader step={2} label="Tune & run" active={hasModel} />
+      {!hasModel ? (
+        <p className="text-[11px] text-neutral-500">
+          Pick a sample or upload a model to start the tunnel.
+        </p>
+      ) : null}
+      <div className={hasModel ? undefined : "opacity-60"}>
+        <ControlPanel
+          conditions={sim.conditions}
+          setConditions={sim.setConditions}
+          transport={sim.transport}
+          controlsDisabled={!sim.ready || !hasModel}
+          conditionsUnstable={sim.conditionsUnstable}
+          engineError={sim.error}
+        />
+      </div>
     </div>
   );
 }
@@ -260,8 +295,9 @@ function Shell({ onEngineRetry }: { onEngineRetry: () => void }) {
         <h1 className="text-sm font-semibold tracking-wide">Wind Tunnel</h1>
       </header>
       <main className="flex min-h-0 flex-1 gap-4 p-4">
-        <ControlsRail />
+        <SetupRail />
         <ViewportPane />
+        <TuneRail />
       </main>
       <footer className="h-16 shrink-0 border-t border-neutral-800 px-4 py-2">
         <StatsPanel />
