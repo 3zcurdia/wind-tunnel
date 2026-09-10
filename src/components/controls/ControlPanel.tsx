@@ -117,10 +117,9 @@ function LayerToggle({
 
 /**
  * Layer toggles (F020 §3) + the F015 pressure legend. Smoke and heatmap
- * state is applied every frame by the F019 loop; the other three flags are
+ * state is applied every frame by the F019 loop; the other two flags are
  * SceneManager-backed and applied by the effect below. Toggles are
- * independent and instant. The voxel-debug toggle flips real state but has
- * no visible effect in v1 — nothing feeds the cloud (DECISIONS §F020.2).
+ * independent and instant.
  */
 function LayersSection() {
   const {
@@ -130,8 +129,6 @@ function LayersSection() {
     setSmokeEnabled,
     particlesVisible,
     setParticlesVisible,
-    voxelDebugVisible,
-    setVoxelDebugVisible,
     domainBoxVisible,
     setDomainBoxVisible,
     readout,
@@ -139,16 +136,15 @@ function LayersSection() {
   const anchors = readout ?? { pMinPa: 0, pMaxPa: 0, qRefPa: 0 };
 
   // Push the SceneManager-backed flags on change. Defaults match a fresh
-  // SceneManager (particles/domain shown, voxels hidden), and the fieldset
-  // gates interaction until the engine is ready — long after the viewport
-  // registers — so a null manager here is a harmless no-op.
+  // SceneManager (particles/domain shown), and the fieldset gates interaction
+  // until the engine is ready — long after the viewport registers — so a null
+  // manager here is a harmless no-op.
   useEffect(() => {
     const manager = getSceneManager();
     if (!manager) return;
     manager.setLayerVisible("particles", particlesVisible);
-    manager.setVoxelDebugVisible(voxelDebugVisible);
     manager.setDomainBoxVisible(domainBoxVisible);
-  }, [particlesVisible, voxelDebugVisible, domainBoxVisible]);
+  }, [particlesVisible, domainBoxVisible]);
 
   return (
     <section>
@@ -170,12 +166,6 @@ function LayersSection() {
         label="Surface pressure"
         checked={heatmapEnabled}
         onChange={setHeatmapEnabled}
-      />
-      <LayerToggle
-        id="layer-voxel-debug"
-        label="Voxel debug"
-        checked={voxelDebugVisible}
-        onChange={setVoxelDebugVisible}
       />
       <LayerToggle
         id="layer-domain-box"

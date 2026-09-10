@@ -13,7 +13,12 @@ import {
   type QualitySpec,
 } from "@/lib/sim/quality";
 import { DOMAIN, type SimReadout } from "@/lib/sim/types";
-import { loadWasm, type WasmApi } from "@/lib/sim/wasm";
+import {
+  loadWasm,
+  type SetMeshResult,
+  type StatsRecordHandle,
+  type WasmApi,
+} from "@/lib/sim/wasm";
 import type { ModelOrientation } from "@/lib/sim/ModelContext";
 
 /**
@@ -31,86 +36,6 @@ import type { ModelOrientation } from "@/lib/sim/ModelContext";
  * while a caller reads a view within a single frame.
  */
 
-/** Structural view of the wasm-bindgen `LatticeParams` return (F009). */
-interface LatticeParamsHandle {
-  readonly u_lattice: number;
-  readonly tau: number;
-  readonly dt: number;
-  readonly dx_phys: number;
-  readonly re: number;
-  readonly rho_phys: number;
-  readonly unstable: boolean;
-  free(): void;
-}
-
-/** Structural view of the wasm-bindgen `SetMeshResult` return (F022). */
-interface SetMeshResultHandle {
-  readonly solidCount: number;
-  readonly skippedTriangles: number;
-  free(): void;
-}
-
-/** Structural view of the wasm-bindgen `PressureAnchors` return (F012). */
-interface PressureAnchorsHandle {
-  readonly p_min_pa: number;
-  readonly p_max_pa: number;
-  readonly q_ref_pa: number;
-  free(): void;
-}
-
-/** Structural view of the wasm-bindgen `Timing` return (F010). */
-interface TimingHandle {
-  readonly last_step_ms: number;
-  readonly avg_step_ms: number;
-  free(): void;
-}
-
-/** Structural view of the wasm-bindgen `StatsRecord` return (F013). */
-interface StatsRecordHandle {
-  readonly cd: number;
-  readonly drag_n: number;
-  readonly p_min_pa: number;
-  readonly p_max_pa: number;
-  readonly re: number;
-  readonly steps: bigint;
-  readonly active_particles: number;
-  readonly stable: boolean;
-  free(): void;
-}
-
-/**
- * Full ABI surface used by the engine. `wasm.ts` intentionally stays at its
- * narrow loader type (F022 leaves its stale `set_mesh(): number` typing
- * untouched per the file-list discipline — see DECISIONS.md §F022.3); the
- * structural extension lives here so no `wasm.ts` edit is needed.
- */
-type FullWasmApi = Omit<WasmApi, "set_mesh"> & {
-  set_conditions(
-    uMps: number,
-    pressureKpa: number,
-    viscosityPas: number,
-    domainLengthM: number,
-    charLengthM: number,
-  ): LatticeParamsHandle;
-  reset_flow(): void;
-  step(n: number): void;
-  is_stable(): boolean;
-  timing(): TimingHandle;
-  set_mesh(triangles: Float32Array): SetMeshResultHandle;
-  clear_mesh(): void;
-  particles_ptr(): number;
-  speeds_ptr(): number;
-  active_particle_count(): number;
-  spawn_particles(count: number): void;
-  respawn(n: number): number;
-  advect_particles(dt: number): void;
-  sample_velocity_batch(points: Float32Array, out: Float32Array): void;
-  vertex_pressure_ptr(): number;
-  vertex_pressure_len(): number;
-  pressure_anchors(): PressureAnchorsHandle;
-  stats(): StatsRecordHandle;
-};
-
 /** WASM particle-pool capacity: sized for the count slider max (F014). */
 export const PARTICLE_CAPACITY = 100000;
 
@@ -120,15 +45,16 @@ export const PARTICLE_COUNT_MAX = 100000;
 export const PARTICLE_COUNT_STEP = 5000;
 export const PARTICLE_COUNT_DEFAULT = 30000;
 
-/** Smoke rake size default (F016 §1; single owner since F019). */
-export const SMOKE_TRACER_COUNT = 25; // F021: superseded by QUALITY_PRESETS smoke counts; kept for API stability.
 /** Trail-length UI range (F016 §2). */
 export const SMOKE_HISTORY_MIN = 30;
 export const SMOKE_HISTORY_MAX = 240;
 export const SMOKE_HISTORY_DEFAULT = 90;
-/** Rake-height slider range (F016 §2: y in 8..ny−8). */
+/**
+ * Rake-height inset from the domain floor/ceiling (F016 §2: y in 8..ny−8).
+ * The slider's live range is derived from the active tier's `ny` by
+ * `SimulationContext.smokeRakeBounds`, not from a constant here.
+ */
 export const SMOKE_RAKE_Y_MIN = 8;
-export const SMOKE_RAKE_Y_MAX = DOMAIN.ny - 8;
 /** Rake-width slider range (F016 §2: halfWidth in 2..16). */
 export const SMOKE_HALF_WIDTH_MIN = 2;
 export const SMOKE_HALF_WIDTH_MAX = 16;
@@ -446,7 +372,7 @@ export interface SimEngineInit {
 }
 
 export class SimEngine {
-  private api: FullWasmApi | null = null;
+  private api: WasmApi | null = null;
   private initPromise: Promise<void> | null = null;
   private running = true;
   private stepsPerFrame = 2;
@@ -537,7 +463,7 @@ export class SimEngine {
         ? Math.max(0, Math.floor(options.particleCount))
         : spec.particles;
     this.initPromise = (async () => {
-      const api = (await loadWasm()) as FullWasmApi;
+      const api = await loadWasm();
       this.dims = { ...spec.grid };
       this.quality = spec.level;
       this.particleTarget = target;
@@ -584,7 +510,7 @@ export class SimEngine {
     return this.api !== null;
   }
 
-  private requireApi(): FullWasmApi {
+  private requireApi(): WasmApi {
     const api = this.api;
     if (!api) {
       throw new AppError(
@@ -622,7 +548,7 @@ export class SimEngine {
   setMesh(geometry: BufferGeometry): MeshResult {
     const api = this.requireApi();
     const soup = triangleSoup(geometry);
-    let result: SetMeshResultHandle;
+    let result: SetMeshResult;
     try {
       result = api.set_mesh(soup);
     } catch (err) {
@@ -717,7 +643,7 @@ export class SimEngine {
       return { ...this.appliedResult };
     }
     const rotated = rotateTriangleSoup(cached.soup, cached.dims, o);
-    let result: SetMeshResultHandle;
+    let result: SetMeshResult;
     try {
       result = api.set_mesh(rotated);
     } catch (err) {
@@ -858,17 +784,21 @@ export class SimEngine {
 
   /**
    * Hidden warm-up for the first-visit auto-probe (F021 §1): run one
-   * `step(8)` at the boot (Low) grid and return `timing().avg_step_ms` for
-   * `probeQuality`. Leaves a clean uniform flow behind (`reset_flow`) so the
-   * caller can keep the instance as-is when the probe picks Low. Throws when
-   * used before `init()` completed.
+   * `step(8)` at the boot (Low) grid and return `timing().last_step_ms` for
+   * `probeQuality`. `last_step_ms` is the per-step cost of that one batch —
+   * the sibling `avg_step_ms` is an EMA seeded at 0 (`avg += (last - avg) *
+   * 0.1` in `wasm/src/lib.rs`), so after a single batch it reads ~10 % of the
+   * real cost and would bias the probe towards Medium on every device.
+   * Leaves a clean uniform flow behind (`reset_flow`) so the caller can keep
+   * the instance as-is when the probe picks Low. Throws when used before
+   * `init()` completed.
    */
   warmupStepMs(): number {
     const api = this.requireApi();
     api.step(8);
     const timing = api.timing();
     try {
-      const ms = timing.avg_step_ms;
+      const ms = timing.last_step_ms;
       return Number.isFinite(ms) && ms >= 0 ? ms : 0;
     } finally {
       timing.free();
@@ -1170,14 +1100,18 @@ export class SimEngine {
     if (nowMs - this.lastRecoveryMs >= RECOVERY_THROTTLE_MS) {
       this.lastRecoveryMs = nowMs;
       const halved = Math.min(60, Math.max(1, prevU / 2));
-      try {
-        this.setConditions({ ...this.lastConditions, uMps: halved });
-        windReduced = true;
-        nextU = halved;
-      } catch {
-        // A failed conditions commit must not block the flow reset below.
-        windReduced = false;
-        nextU = null;
+      // At the 1 m/s floor the "halved" value is the current one — committing
+      // it would toast "wind reduced" without reducing anything.
+      if (halved < prevU) {
+        try {
+          this.setConditions({ ...this.lastConditions, uMps: halved });
+          windReduced = true;
+          nextU = halved;
+        } catch {
+          // A failed conditions commit must not block the flow reset below.
+          windReduced = false;
+          nextU = null;
+        }
       }
     }
     api.reset_flow();

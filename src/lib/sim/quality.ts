@@ -82,9 +82,13 @@ export const QUALITY_STORAGE_KEY = "wt.quality";
 /**
  * Auto-probe budget (F021 §1): the warm-up measures one `step(8)` at the Low
  * grid; the High grid holds exactly 8× the cells
- * (128·48·48 / 64·24·24 = 294912 / 36864 = 8), so `avg_step_ms × 8`
+ * (128·48·48 / 64·24·24 = 294912 / 36864 = 8), so `last_step_ms × 8`
  * estimates the High-grid cost. Above 12 ms (the F019 solver budget) the
  * device is too slow for anything above Low.
+ *
+ * The reading is `last_step_ms` (the per-step cost of that one batch), not
+ * the `avg_step_ms` EMA — the EMA is seeded at 0 and only moves 10 % per
+ * batch, so a single warm-up batch reads ~10 % of the true cost.
  */
 export const PROBE_BUDGET_MS = 12;
 export const PROBE_GRID_SCALE = 8;
@@ -138,9 +142,11 @@ export function storeQuality(level: QualityLevel): void {
  * Pick the first-visit default from a warm-up measurement (F021 interface
  * contract — pure: takes the measured number, does no wasm itself).
  *
- * `warmupStepMs` is `timing().avg_step_ms` after one `step(8)` at the Low
- * grid. `avg × 8 > 12 ms` → the device cannot hold High inside the frame
- * budget → Low; otherwise Medium. The probe never auto-picks High (a manual
+ * `warmupStepMs` is `timing().last_step_ms` after one `step(8)` at the Low
+ * grid — the last-batch reading, not the EMA, which a single batch leaves at
+ * ~10 % of the real cost. `last × 8 > 12 ms` → the device cannot hold High
+ * inside the frame budget → Low; otherwise Medium.
+ * The probe never auto-picks High (a manual
  * upgrade only). Non-finite or non-positive measurements fall back to Medium
  * (the safe, spec'd default — a broken timer must not strand a fast machine
  * on Low). The 12 ms boundary itself belongs to Medium (`>` is strict).

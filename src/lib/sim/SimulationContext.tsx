@@ -106,6 +106,18 @@ export interface SimulationContextValue {
     zCenter: number,
     halfWidth: number,
   ): SmokeRakeState;
+  /**
+   * Live rake slider range for the active tier's grid (F021): the F016 §2
+   * margin rule (y in 8..ny−8, z in 1..nz−1) evaluated against
+   * `QUALITY_PRESETS[quality].grid` instead of the compile-time High dims —
+   * a Low-tier grid (ny = 24) must not offer y beyond its own domain.
+   */
+  readonly smokeRakeBounds: {
+    readonly yMin: number;
+    readonly yMax: number;
+    readonly zMin: number;
+    readonly zMax: number;
+  };
   readonly smokeHistoryLen: number;
   setSmokeHistoryLen(n: number): number;
   readonly heatmapEnabled: boolean;
@@ -118,9 +130,6 @@ export interface SimulationContextValue {
    */
   readonly particlesVisible: boolean;
   setParticlesVisible(on: boolean): void;
-  /** Voxel debug cloud (inert in v1 — no occupancy feed, DECISIONS §F020.2). */
-  readonly voxelDebugVisible: boolean;
-  setVoxelDebugVisible(on: boolean): void;
   /** Domain box + ground grid + inlet marker. */
   readonly domainBoxVisible: boolean;
   setDomainBoxVisible(on: boolean): void;
@@ -213,7 +222,6 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
   const [quality, setQualityState] = useState<QualityLevel>(DEFAULT_QUALITY);
   const [autoProbed, setAutoProbed] = useState(false);
   const [particlesVisible, setParticlesVisibleState] = useState(true);
-  const [voxelDebugVisible, setVoxelDebugVisibleState] = useState(false);
   const [domainBoxVisible, setDomainBoxVisibleState] = useState(true);
 
   const pendingRef = useRef<FlowConditions | null>(null);
@@ -479,12 +487,30 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
 
   const setSmokeRake = useCallback(
     (yCenter: number, zCenter: number, halfWidth: number): SmokeRakeState => {
-      const next = clampSmokeRake(yCenter, zCenter, halfWidth);
+      // Clamp against the live grid, not the compile-time High dims —
+      // otherwise a Low-tier rake can be seeded outside the domain and its
+      // tracers freeze at the seed forever (SmokeTracers.update).
+      const next = clampSmokeRake(
+        yCenter,
+        zCenter,
+        halfWidth,
+        engine.getDims(),
+      );
       setSmokeRakeState(next);
       return next;
     },
-    [],
+    [engine],
   );
+
+  const smokeRakeBounds = useMemo(() => {
+    const { ny, nz } = QUALITY_PRESETS[quality].grid;
+    return {
+      yMin: SMOKE_RAKE_Y_MIN,
+      yMax: ny - SMOKE_RAKE_Y_MIN,
+      zMin: 1,
+      zMax: nz - 1,
+    };
+  }, [quality]);
 
   const setSmokeHistoryLen = useCallback((n: number): number => {
     const next = clampHistoryLen(n);
@@ -498,10 +524,6 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
 
   const setParticlesVisible = useCallback((on: boolean) => {
     setParticlesVisibleState(on);
-  }, []);
-
-  const setVoxelDebugVisible = useCallback((on: boolean) => {
-    setVoxelDebugVisibleState(on);
   }, []);
 
   const setDomainBoxVisible = useCallback((on: boolean) => {
@@ -568,14 +590,13 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
       setSmokeEnabled,
       smokeRake,
       setSmokeRake,
+      smokeRakeBounds,
       smokeHistoryLen,
       setSmokeHistoryLen,
       heatmapEnabled,
       setHeatmapEnabled,
       particlesVisible,
       setParticlesVisible,
-      voxelDebugVisible,
-      setVoxelDebugVisible,
       domainBoxVisible,
       setDomainBoxVisible,
       getEngine,
@@ -602,14 +623,13 @@ export function SimulationProvider({ children }: { children: ReactNode }) {
       setSmokeEnabled,
       smokeRake,
       setSmokeRake,
+      smokeRakeBounds,
       smokeHistoryLen,
       setSmokeHistoryLen,
       heatmapEnabled,
       setHeatmapEnabled,
       particlesVisible,
       setParticlesVisible,
-      voxelDebugVisible,
-      setVoxelDebugVisible,
       domainBoxVisible,
       setDomainBoxVisible,
       getEngine,

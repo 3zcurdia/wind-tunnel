@@ -33,6 +33,9 @@ import { SmokeTracers } from "@/lib/viz/SmokeTracers";
  */
 const SMOKE_DT_LATTICE = 1.0;
 
+/** Minimum gap between frame-loop failure warnings (ms). */
+const FRAME_WARN_THROTTLE_MS = 5000;
+
 /** Shared empty pressure view (no mesh yet) — never written to. */
 const EMPTY_PRESSURE = new Float32Array(0);
 
@@ -144,6 +147,9 @@ export function useSimulation(): void {
     let tracers: SmokeTracers | null = null;
     // Fresh emission on smoke re-enable (the deleted driver's toggle rule).
     let wasSmokeEnabled = settingsRef.current.smokeEnabled;
+    // Throttle for the frame-loop catch below (at most one warn per 5 s, so a
+    // persistently-throwing frame is visible without flooding the console).
+    let lastFrameWarnMs = -Infinity;
 
     void (async () => {
       try {
@@ -257,10 +263,15 @@ export function useSimulation(): void {
             },
             result.stable,
           );
-        } catch {
+        } catch (err) {
           // A poisoned instance must not kill the render loop: skip the
           // frame on last buffers. (Unreachable by the Rust no-panic
           // contract; the readout poll independently reports null.)
+          const nowMs = performance.now();
+          if (nowMs - lastFrameWarnMs >= FRAME_WARN_THROTTLE_MS) {
+            lastFrameWarnMs = nowMs;
+            console.warn("[useSimulation] frame skipped after a throw:", err);
+          }
           return;
         }
       });

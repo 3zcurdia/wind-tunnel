@@ -105,8 +105,7 @@ pub(crate) const W: [f64; 19] = [
 ];
 
 /// Opposite direction: `REVERSE[i]` is `ī` with `e[ī] = −e[i]`.
-/// (Unused until F008's bounce-back; kept here so the table lives with the set.)
-#[allow(dead_code)]
+/// (Kept here so the table lives with the set; used by the bounce-back pass.)
 pub(crate) const REVERSE: [usize; 19] = [
     0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15, 18, 17,
 ];
@@ -153,6 +152,14 @@ pub(crate) fn macroscopic(f: &[f32], n_cells: usize, cell: usize) -> (f64, f64, 
 /// `(1, u_inlet, 0, 0)`, solid cells → equilibrium at rest `(1, 0, 0, 0)`,
 /// `f_next` zeroed, `steps = 0`, mass fluxes zeroed (F008). See the module
 /// docs for why solids rest.
+///
+/// Also refreshes the precomputed obstacle boundary links
+/// (`boundaries::rebuild_boundary_links`). A field reset never changes
+/// `occupancy`, so the list is usually unchanged — but this is the funnel the
+/// analytic-occupancy fixtures use *instead of* [`retune_solid_cells`], so
+/// hooking it here keeps the "occupancy never changes without a rebuild"
+/// invariant airtight (see `boundaries.rs` module docs). Mesh-time only, so
+/// the allocation is fine.
 pub(crate) fn reset_state_flow(state: &mut SimState) {
     let n = state.nx * state.ny * state.nz;
     debug_assert_eq!(state.f.len(), 19 * n);
@@ -184,12 +191,19 @@ pub(crate) fn reset_state_flow(state: &mut SimState) {
     // state, not flow state, so the EMA intentionally survives a reset.
     state.stable = true;
     state.last_unstable_step = 0;
+    crate::boundaries::rebuild_boundary_links(state);
 }
 
 /// Set every solid cell's 19 populations in both buffers to rest equilibrium,
 /// and every newly-fluid cell (listed in `to_fluid`) to inlet equilibrium.
 /// Used by `set_mesh`/`clear_mesh` so a fresh obstacle immediately disturbs
-/// the flow without resetting the whole field. Allocates nothing.
+/// the flow without resetting the whole field.
+///
+/// This is the primary occupancy-change funnel, so it ends by rebuilding the
+/// precomputed obstacle boundary links (`boundaries::rebuild_boundary_links`)
+/// — the per-step bounce-back reads that list and never rescans occupancy.
+/// The retune itself allocates nothing; the link rebuild may (mesh-time only,
+/// never inside a step).
 pub(crate) fn retune_solid_cells(state: &mut SimState, to_fluid: &[usize]) {
     let n = state.nx * state.ny * state.nz;
     if state.f.len() != 19 * n || state.f_next.len() != 19 * n {
@@ -218,6 +232,7 @@ pub(crate) fn retune_solid_cells(state: &mut SimState, to_fluid: &[usize]) {
             }
         }
     }
+    crate::boundaries::rebuild_boundary_links(state);
 }
 
 /// One BGK timestep with the F008 wind-tunnel BC set (see module docs).
@@ -435,10 +450,6 @@ fn stream_pass_wind_tunnel(state: &mut SimState) {
         }
         for z in 0..nz {
             let sz = z as i32 - ez;
-            if sz < 0 || sz >= nz as i32 {
-                // Whole row's sources are still mixed in y/x; fall through to
-                // per-cell bounds checks below (faces get BC-overwritten).
-            }
             for y in 0..ny {
                 let sy = y as i32 - ey;
                 let dst_row = (z * ny + y) * nx;
@@ -456,7 +467,10 @@ fn stream_pass_wind_tunnel(state: &mut SimState) {
                     }
                     let sx = x as i32 - ex;
                     if !src_row_ok || sx < 0 || sx >= nx as i32 {
-                        continue; // out-of-domain: BC pass fixes the face
+                        // Out-of-domain source in x, y or z (an out-of-range
+                        // `sz` lands here through `src_row_ok`): skip — the BC
+                        // pass overwrites the face.
+                        continue;
                     }
                     let src = src_row + (sx as usize);
                     f[base + dst] = f_next[base + src];
