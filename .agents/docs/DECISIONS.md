@@ -1082,3 +1082,45 @@ the drag-sum parity), plus the empty-on-fresh default. The existing physics
 suite is the behavioural regression net: `no_flow_through_solid`,
 `wake_exists_downstream_of_cube`, `steady_state_reached`,
 `sphere_cd_order_of_magnitude` (drag EMA envelope), `healthy_run_stays_stable`.
+
+---
+
+## 2026-09-10 — F026 (flow scenario presets)
+
+Verification for this entry: `node --test src/lib/sim/conditions.test.mjs`
+18/18 pass; `npm run lint` zero errors/warnings; `npm run build` succeeds with
+the real generated bindings (`src/wasm/` present); headless Chrome 153 via
+Playwright (`playwright-core`, system Chrome, real wasm artifact) 40/40
+acceptance checks; `cargo test` not run (no Rust files touched — waived per
+CONVENTIONS.md).
+
+1. **The viscosity "on its slider grid" test-plan check is unsatisfiable —
+   the default is pinned instead.** Spec §1's note says every preset value
+   sits on its slider grid, but the viscosity preset value is the F018
+   default coefficient 1.81, which is 26.2 steps above the 0.5 min at step
+   0.05 (remainder 0.01) — not a grid multiple. The spec forbids changing the
+   values ("do not change them"), so the test asserts the literal
+   `(value − min) / step ≈ whole` for speed and pressure, and for viscosity
+   asserts exact equality with `DEFAULT_CONDITIONS.viscosityPas` plus a loud
+   pin that the default is off-grid (a future re-gridding of the viscosity
+   slider fails the test for review). The F018 slider already renders the
+   off-grid 1.81 default by React state (the range input's sanitization may
+   display the nearest step), so no new behavior is introduced here.
+2. **The collapsed summary carries "stability assist on" at the F018
+   defaults too.** §6 appends the amber marker whenever `conditionsUnstable`
+   is true; with real air the τ clamp fires at every physical operating point
+   (F009 §2 — `unstable: true` is the normal regime), so the default summary
+   reads `15.0 m/s · 101.3 kPa · 1.81 ×10⁻⁵ Pa·s · stability assist on`.
+   Criterion 7's example (`Race car → 55.0 m/s · 101.5 kPa · 1.81 ×10⁻⁵ Pa·s`)
+   lists the value portion; suppressing the marker at defaults would
+   contradict §6 and criterion 9's "never fully hidden" intent. No code
+   change — the marker reflects the contract flag exactly, and the values
+   themselves match the spec string.
+3. **Discovered, not fixed (outside F026's file list): samples leave the
+   stats bar in placeholder mode.** `SimulationContext`'s 4 Hz readout poll
+   fills `modelName` from `ModelContext.file` only; the F023 sample path sets
+   `sample` and leaves `file` null, so `StatsPanel`'s `empty` branch renders
+   `—` for every metric (Model, Cd, Drag, P min/max, Re, Particles) even with
+   a sample fully simulated. Uploaded files are unaffected. Reported in the
+   F026 final report; a one-line `sample`-aware fix belongs to a follow-up
+   touching `SimulationContext.tsx`.

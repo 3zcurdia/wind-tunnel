@@ -86,7 +86,7 @@ after F025 lands (F027 and F026 both edit `ControlPanel.tsx` — sequence them
 to avoid conflicts). All five are TypeScript/UI only — no wasm, no ABI changes.
 
 - [x] [F025 — Two-step rails (Load & set up / Tune & run)](features/F025-two-step-rails.md) — `S` `UI` (2026-09-10; code + headless Playwright verification — 30/30 checks, rails scroll independently. `next build` verified with a temporary generated-wasm stub; wasm-pack/cargo absent in this environment — see spec's open item)
-- [ ] [F026 — Flow scenario presets (one-click conditions)](features/F026-flow-presets.md) — `S` `UI/logic`
+- [x] [F026 — Flow scenario presets (one-click conditions)](features/F026-flow-presets.md) — `S` `UI/logic` (2026-09-10; `node --test` 18/18, lint + build clean, headless Chrome 40/40 acceptance checks with real wasm; two spec-print notes in DECISIONS.md §F026; pre-existing sample-stats placeholder issue reported, not fixed)
 - [ ] [F027 — Plain-language pass (dual units, altitude, friendly warnings)](features/F027-plain-language-pass.md) — `S` `UI`
 - [ ] [F028 — Live first paint (auto-load a sample at boot)](features/F028-auto-sample-boot.md) — `XS` `glue`
 - [ ] [F029 — Simple stats mode (hero numbers for non-experts)](features/F029-simple-stats-mode.md) — `S` `UI`

@@ -118,3 +118,70 @@ export function viscosityCoefToPas(coef: number): number {
 export function viscosityPasToCoef(pas: number): number {
   return pas * 1e5;
 }
+
+/**
+ * One-click real-world scenario (F026 §1).
+ *
+ * Every preset lives inside the solver's honest envelope (subsonic, 1–60 m/s,
+ * 50–110 kPa — ARCHITECTURE.md §3/§4). There is deliberately no jet or
+ * supersonic preset: this LBM cannot represent shocks or compressibility.
+ */
+export interface FlowPreset {
+  readonly id: "breeze" | "city" | "race" | "mountain";
+  /** Button text. */
+  readonly label: string;
+  /** One line under the grid while this preset is active. */
+  readonly caption: string;
+  readonly conditions: FlowConditions;
+}
+
+/**
+ * Scenario table (F026 §1, values fixed by the spec — do not retune). The
+ * viscosity is the F018 default coefficient 1.81, which is intentionally off
+ * the 0.05-coefficient grid (see DECISIONS.md §F026).
+ */
+export const FLOW_PRESETS: readonly FlowPreset[] = [
+  {
+    id: "breeze",
+    label: "Breeze",
+    caption: "A stiff sea breeze — gentle, attached flow.",
+    conditions: { uMps: 8, pressureKpa: 101.5, viscosityPas: 1.81e-5 },
+  },
+  {
+    id: "city",
+    label: "City drive",
+    caption: "≈50 km/h at sea level — the everyday car case.",
+    conditions: { uMps: 14, pressureKpa: 101.5, viscosityPas: 1.81e-5 },
+  },
+  {
+    id: "race",
+    label: "Race car",
+    caption: "≈200 km/h — watch the wake grow and drag climb.",
+    conditions: { uMps: 55, pressureKpa: 101.5, viscosityPas: 1.81e-5 },
+  },
+  {
+    id: "mountain",
+    label: "High altitude",
+    caption: "≈4,000 m up — thinner air, same speed, less drag.",
+    conditions: { uMps: 25, pressureKpa: 61.5, viscosityPas: 1.81e-5 },
+  },
+] as const;
+
+/**
+ * Active-preset matcher (F026 §2): the id of the preset whose three values
+ * all match `c` within 1e-9 absolute tolerance, else `null` — so moving any
+ * slider after a preset click deselects it. Pure.
+ */
+export function matchPreset(c: FlowConditions): FlowPreset["id"] | null {
+  for (const preset of FLOW_PRESETS) {
+    const p = preset.conditions;
+    if (
+      Math.abs(c.uMps - p.uMps) <= 1e-9 &&
+      Math.abs(c.pressureKpa - p.pressureKpa) <= 1e-9 &&
+      Math.abs(c.viscosityPas - p.viscosityPas) <= 1e-9
+    ) {
+      return preset.id;
+    }
+  }
+  return null;
+}

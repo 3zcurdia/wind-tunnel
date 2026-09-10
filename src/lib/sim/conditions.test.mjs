@@ -31,9 +31,11 @@ import {
   DEFAULT_CHAR_LEN_M,
   DEFAULT_CONDITIONS,
   DOMAIN_LENGTH_M,
+  FLOW_PRESETS,
   VISCOSITY_COEF_RANGE,
   WIND_SPEED_RANGE,
   derivedValues,
+  matchPreset,
   viscosityCoefToPas,
   viscosityPasToCoef,
 } from "./conditions.ts";
@@ -167,5 +169,102 @@ describe("ranges and constants", () => {
   it("pins the JS-owned physical constants", () => {
     assert.strictEqual(DOMAIN_LENGTH_M, 1.0);
     assert.strictEqual(DEFAULT_CHAR_LEN_M, 0.25);
+  });
+});
+
+/** True when `value` is a whole number of `range.step`s above `range.min`. */
+function assertOnGrid(value, range, label) {
+  const steps = (value - range.min) / range.step;
+  assert.ok(
+    Math.abs(steps - Math.round(steps)) < 1e-9,
+    `${label}: ${value} is not on the ${range.step} grid from ${range.min}`,
+  );
+}
+
+describe("FLOW_PRESETS + matchPreset (F026)", () => {
+  it("pins the spec's literal preset values", () => {
+    const byId = Object.fromEntries(
+      FLOW_PRESETS.map((p) => [p.id, p.conditions]),
+    );
+    assert.deepStrictEqual(byId.breeze, {
+      uMps: 8,
+      pressureKpa: 101.5,
+      viscosityPas: 1.81e-5,
+    });
+    assert.deepStrictEqual(byId.city, {
+      uMps: 14,
+      pressureKpa: 101.5,
+      viscosityPas: 1.81e-5,
+    });
+    assert.deepStrictEqual(byId.race, {
+      uMps: 55,
+      pressureKpa: 101.5,
+      viscosityPas: 1.81e-5,
+    });
+    assert.deepStrictEqual(byId.mountain, {
+      uMps: 25,
+      pressureKpa: 61.5,
+      viscosityPas: 1.81e-5,
+    });
+  });
+
+  it("matchPreset round-trips every preset's own conditions", () => {
+    for (const preset of FLOW_PRESETS) {
+      assert.strictEqual(matchPreset(preset.conditions), preset.id);
+    }
+  });
+
+  it("matchPreset(DEFAULT_CONDITIONS) is null (defaults are not a preset)", () => {
+    assert.strictEqual(matchPreset(DEFAULT_CONDITIONS), null);
+  });
+
+  it("matchPreset({ ...race, uMps: 54.5 }) is null (any nudge deselects)", () => {
+    const race = FLOW_PRESETS.find((p) => p.id === "race");
+    assert.ok(race, "race preset missing");
+    assert.strictEqual(matchPreset({ ...race.conditions, uMps: 54.5 }), null);
+  });
+
+  it("every preset's speed and pressure sit on their slider grids", () => {
+    for (const preset of FLOW_PRESETS) {
+      assertOnGrid(preset.conditions.uMps, WIND_SPEED_RANGE, `${preset.id}.uMps`);
+      assertOnGrid(
+        preset.conditions.pressureKpa,
+        AIR_PRESSURE_RANGE,
+        `${preset.id}.pressureKpa`,
+      );
+    }
+  });
+
+  it("viscosity equals the F018 default (coef 1.81, deliberately off-grid)", () => {
+    // Spec §1's note says "viscosity equals the default — do not change
+    // them"; the literal `% step ≈ 0` check from the test plan cannot hold
+    // for it: the default coef 1.81 is 26.2 steps above the 0.5 min at step
+    // 0.05. See DECISIONS.md §F026 — the default is pinned instead.
+    for (const preset of FLOW_PRESETS) {
+      assert.strictEqual(
+        preset.conditions.viscosityPas,
+        DEFAULT_CONDITIONS.viscosityPas,
+      );
+    }
+    const coef = viscosityPasToCoef(DEFAULT_CONDITIONS.viscosityPas);
+    const steps = (coef - VISCOSITY_COEF_RANGE.min) / VISCOSITY_COEF_RANGE.step;
+    assert.ok(Math.abs(steps - 26.2) < 1e-9, `default coef steps: ${steps}`);
+    assert.ok(
+      Math.abs(steps - Math.round(steps)) > 1e-9,
+      "default viscosity coef unexpectedly on-grid; revisit DECISIONS.md §F026",
+    );
+  });
+
+  it("High altitude derives ρ ≈ 0.731 kg/m³ (acceptance criterion)", () => {
+    const mountain = FLOW_PRESETS.find((p) => p.id === "mountain");
+    assert.ok(mountain, "mountain preset missing");
+    const d = derivedValues(
+      mountain.conditions.uMps,
+      mountain.conditions.pressureKpa,
+      mountain.conditions.viscosityPas,
+      DEFAULT_CHAR_LEN_M,
+    );
+    assert.ok(Math.abs(d.rhoKgM3 - 0.731) < 0.001, `rho: ${d.rhoKgM3}`);
+    assert.strictEqual(d.rhoKgM3.toFixed(3), "0.731");
   });
 });

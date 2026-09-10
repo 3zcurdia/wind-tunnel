@@ -3,7 +3,9 @@
 import { useEffect } from "react";
 import { Panel } from "@/components/ui/Panel";
 import { Slider } from "@/components/ui/Slider";
+import { AdvancedSection } from "@/components/controls/AdvancedSection";
 import { ParticleCountSlider } from "@/components/controls/ParticleCountSlider";
+import { PresetRow } from "@/components/controls/PresetRow";
 import { PressureLegend } from "@/components/controls/PressureLegend";
 import { SmokeControls } from "@/components/controls/SmokeControls";
 import { getSceneManager } from "@/components/viewport/viewportBridge";
@@ -178,8 +180,10 @@ function LayersSection() {
 }
 
 /**
- * Wind-tunnel instrument panel (F018): Flow sliders, Derived readouts,
- * Transport buttons, plus the relocated Particles / Smoke / Layers sections.
+ * Wind-tunnel instrument panel (F018; F026 re-order): Scenarios preset row on
+ * top, then the Flow sliders, Derived readouts, Particles, and Smoke controls
+ * under a collapsed "Advanced controls" disclosure, then Layers. Transport
+ * buttons stay outside the disclosure/fieldset.
  *
  * Controlled component — slider state lives in the parent (F019's context);
  * every change commits through `setConditions` immediately for the UI while
@@ -236,89 +240,98 @@ export function ControlPanel({
         className="m-0 min-w-0 space-y-5 border-0 p-0"
       >
         <section>
-          <SectionTitle>Flow</SectionTitle>
-          <div className="space-y-3">
-            <Slider
-              label="Wind speed"
-              min={WIND_SPEED_RANGE.min}
-              max={WIND_SPEED_RANGE.max}
-              step={WIND_SPEED_RANGE.step}
-              value={conditions.uMps}
-              onChange={(uMps) => {
-                setConditions({ ...conditions, uMps });
-              }}
-              unit="m/s"
-              format={(v) => v.toFixed(1)}
-            />
-            <Slider
-              label="Air pressure"
-              min={AIR_PRESSURE_RANGE.min}
-              max={AIR_PRESSURE_RANGE.max}
-              step={AIR_PRESSURE_RANGE.step}
-              value={conditions.pressureKpa}
-              onChange={(pressureKpa) => {
-                setConditions({ ...conditions, pressureKpa });
-              }}
-              unit="kPa"
-              format={(v) => v.toFixed(1)}
-            />
-            <Slider
-              label="Dynamic viscosity"
-              min={VISCOSITY_COEF_RANGE.min}
-              max={VISCOSITY_COEF_RANGE.max}
-              step={VISCOSITY_COEF_RANGE.step}
-              value={viscosityPasToCoef(conditions.viscosityPas)}
-              onChange={(coef) => {
-                setConditions({
-                  ...conditions,
-                  viscosityPas: viscosityCoefToPas(coef),
-                });
-              }}
-              unit="×10⁻⁵ Pa·s"
-              format={(v) => v.toFixed(2)}
-            />
-          </div>
+          <SectionTitle>Scenarios</SectionTitle>
+          <PresetRow conditions={conditions} setConditions={setConditions} />
         </section>
-        <section>
-          <SectionTitle>Derived</SectionTitle>
-          <div className="grid grid-cols-2 gap-x-3 gap-y-2">
-            <DerivedCell
-              label="Density ρ"
-              value={`${derived.rhoKgM3.toFixed(3)} kg/m³`}
-              title="Air density ρ = P/(R·T) at 20 °C (display math mirrors F009)"
-            />
-            <DerivedCell
-              label="Viscosity ν"
-              value={`${formatNu(derived.nuM2S)} m²/s`}
-              title="Kinematic viscosity ν = μ/ρ (display math mirrors F009)"
-            />
-            <DerivedCell
-              label="q ref"
-              value={`${derived.qRefPa.toFixed(1)} Pa`}
-              title="Stagnation reference q = ½·ρ·U² (the heatmap normalizer)"
-            />
-            <DerivedCell
-              label="Re"
-              value={formatRe(derived.re)}
-              title="Reynolds number Re = U·L/ν, L = 0.25 m model length"
-            />
-          </div>
-          {conditionsUnstable ? (
-            <p className="mt-2 rounded-md border border-amber-800 bg-amber-950 px-2 py-1 text-[11px] text-amber-300">
-              Stability assist active — real-air viscosity cannot reach a
-              stable τ at this grid, so the solver runs on assist viscosity.
-              Flow stays visual; effective Re is lower than shown.
-            </p>
-          ) : null}
-        </section>
-        <section>
-          <SectionTitle>Particles</SectionTitle>
-          <ParticleCountSlider />
-        </section>
-        <section>
-          <SectionTitle>Smoke</SectionTitle>
-          <SmokeControls />
-        </section>
+        <AdvancedSection
+          conditions={conditions}
+          conditionsUnstable={conditionsUnstable}
+        >
+          <section>
+            <SectionTitle>Flow</SectionTitle>
+            <div className="space-y-3">
+              <Slider
+                label="Wind speed"
+                min={WIND_SPEED_RANGE.min}
+                max={WIND_SPEED_RANGE.max}
+                step={WIND_SPEED_RANGE.step}
+                value={conditions.uMps}
+                onChange={(uMps) => {
+                  setConditions({ ...conditions, uMps });
+                }}
+                unit="m/s"
+                format={(v) => v.toFixed(1)}
+              />
+              <Slider
+                label="Air pressure"
+                min={AIR_PRESSURE_RANGE.min}
+                max={AIR_PRESSURE_RANGE.max}
+                step={AIR_PRESSURE_RANGE.step}
+                value={conditions.pressureKpa}
+                onChange={(pressureKpa) => {
+                  setConditions({ ...conditions, pressureKpa });
+                }}
+                unit="kPa"
+                format={(v) => v.toFixed(1)}
+              />
+              <Slider
+                label="Dynamic viscosity"
+                min={VISCOSITY_COEF_RANGE.min}
+                max={VISCOSITY_COEF_RANGE.max}
+                step={VISCOSITY_COEF_RANGE.step}
+                value={viscosityPasToCoef(conditions.viscosityPas)}
+                onChange={(coef) => {
+                  setConditions({
+                    ...conditions,
+                    viscosityPas: viscosityCoefToPas(coef),
+                  });
+                }}
+                unit="×10⁻⁵ Pa·s"
+                format={(v) => v.toFixed(2)}
+              />
+            </div>
+          </section>
+          <section>
+            <SectionTitle>Derived</SectionTitle>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+              <DerivedCell
+                label="Density ρ"
+                value={`${derived.rhoKgM3.toFixed(3)} kg/m³`}
+                title="Air density ρ = P/(R·T) at 20 °C (display math mirrors F009)"
+              />
+              <DerivedCell
+                label="Viscosity ν"
+                value={`${formatNu(derived.nuM2S)} m²/s`}
+                title="Kinematic viscosity ν = μ/ρ (display math mirrors F009)"
+              />
+              <DerivedCell
+                label="q ref"
+                value={`${derived.qRefPa.toFixed(1)} Pa`}
+                title="Stagnation reference q = ½·ρ·U² (the heatmap normalizer)"
+              />
+              <DerivedCell
+                label="Re"
+                value={formatRe(derived.re)}
+                title="Reynolds number Re = U·L/ν, L = 0.25 m model length"
+              />
+            </div>
+            {conditionsUnstable ? (
+              <p className="mt-2 rounded-md border border-amber-800 bg-amber-950 px-2 py-1 text-[11px] text-amber-300">
+                Stability assist active — real-air viscosity cannot reach a
+                stable τ at this grid, so the solver runs on assist viscosity.
+                Flow stays visual; effective Re is lower than shown.
+              </p>
+            ) : null}
+          </section>
+          <section>
+            <SectionTitle>Particles</SectionTitle>
+            <ParticleCountSlider />
+          </section>
+          <section>
+            <SectionTitle>Smoke</SectionTitle>
+            <SmokeControls />
+          </section>
+        </AdvancedSection>
         <LayersSection />
       </fieldset>
       <section className="mt-5">

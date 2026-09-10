@@ -9,7 +9,7 @@
 | Size | S |
 | Skill fit | `UI` / `logic` |
 | Depends on | F018 (conditions module), F019 (setConditions), F025 (rail layout) |
-| Status | `[ ]` todo |
+| Status | `[x]` done (2026-09-10; `node --test` 18/18, lint + build clean, headless Chrome (Playwright, system Chrome 153, real wasm) 40/40 acceptance checks — see notes below and DECISIONS.md §F026) |
 
 ## Goal
 
@@ -164,30 +164,66 @@ src/components/controls/ControlPanel.tsx     (modify) — Scenarios on top; Flow
 
 ## Acceptance criteria
 
-- [ ] Clicking **Race car** moves the wind-speed slider to 55.0 m/s within one
+- [x] Clicking **Race car** moves the wind-speed slider to 55.0 m/s within one
       render, the button turns blue, its caption appears, and flow visibly
       speeds up (no reset — speed/pressure path).
-- [ ] Clicking **High altitude** after it: pressure slider reads 61.5 kPa and
+      (Verified 2026-09-10 headless with real wasm: after the click the slider
+      input reads `55`, the button is `bg-blue-600` + `aria-pressed`, the
+      caption is visible, and the summary updates in the same render. Engine
+      commit after the 150 ms debounce observed via the stats P-min tooltip:
+      q_ref 0.14 → 1.82 kPa (≈13×, the 55-vs-15 m/s ratio ✓); no reload and
+      no viscosity change, so the F019 speed/pressure path does not reset. The
+      perceptual particle acceleration is the one half a still screenshot
+      cannot show — q_ref is the quantitative proxy.)
+- [x] Clicking **High altitude** after it: pressure slider reads 61.5 kPa and
       derived ρ reads ≈ 0.731 kg/m³ (±0.001).
-- [ ] Dragging any slider afterwards deselects all preset buttons and shows the
+      (Verified headless: slider `61.5`, readout `61.5 kPa`, Derived cell
+      `0.731 kg/m³`; parsed 0.731 within ±0.001.)
+- [x] Dragging any slider afterwards deselects all preset buttons and shows the
       "Custom conditions" line.
-- [ ] Reset all (transport) returns to defaults → no preset matched (defaults
+      (Verified headless: ArrowUp on the wind slider → zero `aria-pressed`
+      buttons and the custom line visible.)
+- [x] Reset all (transport) returns to defaults → no preset matched (defaults
       are intentionally not a preset).
-- [ ] The subsonic note is always visible in the Scenarios section.
-- [ ] Default view of the panel shows only: Scenarios, the collapsed
+      (Verified headless: summary returns to `15.0 m/s · 101.3 kPa · …`, no
+      preset pressed, custom line visible.)
+- [x] The subsonic note is always visible in the Scenarios section.
+      (Verified headless with no model, collapsed, and expanded.)
+- [x] Default view of the panel shows only: Scenarios, the collapsed
       "Advanced controls" header with its live summary line, Layers, and
       Playback — no sliders visible.
-- [ ] Clicking a preset while Advanced is **closed** updates the summary line
+      (Verified headless: visible right-rail `h3` = Scenarios, Layers,
+      Transport; all 6 range inputs hidden; header `aria-expanded=false` with
+      the live summary.)
+- [x] Clicking a preset while Advanced is **closed** updates the summary line
       (e.g. Race car → `55.0 m/s · 101.5 kPa · 1.81 ×10⁻⁵ Pa·s`); opening
       Advanced shows the sliders already at those positions.
-- [ ] Slider edits inside Advanced behave exactly as before this feature
+      (Verified headless: summary contains the spec string, then opening shows
+      wind = 55, pressure = 61.5 after the High-altitude click. Note: the live
+      summary also carries the §6 `· stability assist on` marker because the
+      real-air τ clamp is always active at F018 defaults — F009 §2 / DECISIONS
+      §F026.2.)
+- [x] Slider edits inside Advanced behave exactly as before this feature
       (debounce, viscosity soft-restart, disabled-fieldset gating) and
       deselect the active preset.
-- [ ] At 60 m/s + min viscosity with Advanced closed, the summary line shows
+      (Verified headless: nudge deselects; with no model every preset and
+      every range input matches `:disabled` through the fieldset. The
+      debounce/soft-restart code path is untouched — only JSX moved — and the
+      committed q_ref above proves the debounced path still commits.)
+- [x] At 60 m/s + min viscosity with Advanced closed, the summary line shows
       the amber "stability assist on" marker.
-- [ ] Collapsing/expanding Advanced never resets slider values or re-runs the
+      (Verified headless: summary contains the marker and exactly one
+      `text-amber-400` span; the Derived amber box is visible when reopened.)
+- [x] Collapsing/expanding Advanced never resets slider values or re-runs the
       simulation (state is CSS-hidden, not unmounted).
-- [ ] `node --test` passes with new cases; lint + build clean.
+      (Verified headless: 60/0.5 values identical across collapse → expand →
+      collapse; viewport canvas keeps producing new frames after the toggles.
+      No toggle effect exists by construction — plain `useState` + CSS
+      `hidden`, body always mounted.)
+- [x] `node --test` passes with new cases; lint + build clean.
+      (Verified 2026-09-10: `node --test src/lib/sim/conditions.test.mjs`
+      18/18, `npm run lint` zero errors/warnings, `npm run build` succeeds
+      with the real generated bindings in `src/wasm/`.)
 
 ## Test plan
 
@@ -199,6 +235,20 @@ src/components/controls/ControlPanel.tsx     (modify) — Scenarios on top; Flow
 - Manual: click each preset with the Teardrop loaded; verify captions and the
   drag stat direction (race ≫ city; mountain < city at matched speed—note
   mountain runs faster, compare q_ref instead).
+  (Captions verified 2026-09-10 headless. The drag-stat half could not be
+  observed through the sample path because of a **pre-existing** issue: the
+  F019 readout fills `modelName` from `file` only, so a *sample* model leaves
+  the whole stats bar in placeholder mode (`Model` cell reads `—`) and `cd` /
+  `dragN` never render. This is outside F026's file list — reported, not
+  fixed. With an uploaded OBJ/PLY file the stats bar populates normally.)
+
+## Open item for the user
+
+- Perceptual visual checks that a still screenshot cannot prove: the particle
+  speed-up when clicking **Race car** (quantitatively proxy-verified via
+  q_ref 0.14 → 1.82 kPa) and the free-stream colour/particle motion after a
+  preset change. Everything else was exercised end-to-end in headless Chrome
+  against the real wasm artifact.
 
 ## Out of scope
 
