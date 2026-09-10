@@ -6,8 +6,6 @@ import {
   SMOKE_HISTORY_DEFAULT,
   SMOKE_HISTORY_MAX,
   SMOKE_HISTORY_MIN,
-  SMOKE_RAKE_Y_MAX,
-  SMOKE_RAKE_Y_MIN,
 } from "@/lib/sim/SimEngine";
 import { useSimulationContext } from "@/lib/sim/SimulationContext";
 
@@ -16,6 +14,10 @@ import { useSimulationContext } from "@/lib/sim/SimulationContext";
  * Toggle + rake-height / rake-width sliders + trail-length input, all routed
  * live through the context (the loop applies rake/history to the live rake;
  * the toggle gates the frame update). Signature unchanged.
+ *
+ * The rake-height range comes from the context (`smokeRakeBounds`), so it
+ * tracks the active quality tier's grid — the compile-time High-grid bound
+ * would let a Low-tier rake be seeded outside the domain.
  */
 export function SmokeControls() {
   const {
@@ -23,6 +25,7 @@ export function SmokeControls() {
     setSmokeEnabled,
     smokeRake,
     setSmokeRake,
+    smokeRakeBounds,
     smokeHistoryLen,
     setSmokeHistoryLen,
   } = useSimulationContext();
@@ -79,8 +82,8 @@ export function SmokeControls() {
       <input
         id="smoke-rake-height"
         type="range"
-        min={SMOKE_RAKE_Y_MIN}
-        max={SMOKE_RAKE_Y_MAX}
+        min={smokeRakeBounds.yMin}
+        max={smokeRakeBounds.yMax}
         step={1}
         value={Math.round(smokeRake.yCenter)}
         onChange={handleRakeHeight}

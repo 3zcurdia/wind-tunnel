@@ -46,6 +46,40 @@
 //!   mirror). To avoid in-place ordering hazards when two opposite directions
 //!   both face solids, each affected cell snapshots its 19 populations first,
 //!   then writes. Only cells adjacent to a solid pay the snapshot cost.
+//!
+//! ## Precomputed boundary links (perf)
+//!
+//! The set of reflecting links is a pure function of `occupancy`, which only
+//! changes at mesh time — never inside a step. Rediscovering it per step cost
+//! ~18 branchy neighbour probes for *every* fluid cell (≈ 5M probes/step at the
+//! default 128×48×48 grid, on par with the collide pass). It is therefore
+//! precomputed once per occupancy change by [`rebuild_boundary_links`] into a
+//! parallel pair of vectors on `SimState`:
+//!
+//! - `boundary_cells[k]` — index of the `k`-th solid-adjacent **fluid** cell,
+//!   in the canonical `z → y → x` scan order;
+//! - `boundary_masks[k]` — bitmask with bit `i` (`i ∈ 1..19`) set iff the
+//!   neighbour `c + e[i]` is in-bounds and solid. Never zero.
+//! - `boundary_grid_len` — the `nx·ny·nz` the list was built for (staleness
+//!   guard; see below).
+//!
+//! [`apply_obstacle_bounce_back`] then walks only that list, iterating the set
+//! bits low-to-high — which reproduces the old `for i in 1..19` visit order
+//! exactly, so the reflections *and* the `f64` drag accumulation order (hence
+//! the returned sum, bit for bit) are unchanged. The per-step pass allocates
+//! nothing; the list itself is rebuilt (and may reallocate) only at mesh time.
+//!
+//! **Rebuild hooks — the invariant is "occupancy never changes without a
+//! rebuild".** Both occupancy-mutating funnels in `lbm.rs` call
+//! [`rebuild_boundary_links`] as their last act:
+//! [`crate::lbm::retune_solid_cells`] (used by `set_mesh` / `clear_mesh` and
+//! every test fixture that paints an analytic solid) and
+//! [`crate::lbm::reset_state_flow`] (used by `init_sim` / `reset_flow` and by
+//! the fixtures that paint occupancy and then reset the field without
+//! retuning). A fresh all-fluid state therefore ends with an empty list —
+//! bounce-back is a no-op, as it was before. As a belt-and-braces guard,
+//! the per-step pass compares `boundary_grid_len` against the live cell count
+//! and does nothing on a mismatch (only reachable via a missed hook).
 //! - *Inlet:* overwrite, including flux accounting
 //!   `mass_in_flux += 1.0 · u_inlet · (ny-2)·(nz-2)` per step (ρ = 1).
 //! - *Outlet:* copy, then measure
@@ -107,9 +141,75 @@ fn state_ok(state: &SimState) -> Option<usize> {
 
 // ── Obstacles ───────────────────────────────────────────────────────
 
-/// Fluid-side full-way bounce-back (see module docs). Skips solid cells;
+/// Rebuild the precomputed obstacle boundary-link list from `occupancy`
+/// (see module docs). **Mesh-time only** — this is the one place in the
+/// obstacle path that is allowed to allocate; it must never be called from
+/// inside a step.
+///
+/// Invariants established here and relied on by [`apply_obstacle_bounce_back`]:
+///
+/// - `boundary_cells` and `boundary_masks` have equal length, and entry `k`
+///   describes a **fluid** cell with a non-zero mask;
+/// - entries are in the canonical `z → y → x` scan order, and each mask's bits
+///   ascend with the direction index, so walking the list reproduces the old
+///   full-grid scan order exactly (bit-identical `f64` drag sum);
+/// - every stored index is `< nx·ny·nz`, and `boundary_grid_len` records that
+///   cell count so a stale list can be detected;
+/// - a degenerate grid (empty, or `occupancy` length-mismatched) and an
+///   all-fluid grid both yield an empty list — bounce-back becomes a no-op.
+///
+/// The capacity of both vectors is retained across rebuilds (`clear`, not
+/// drop), so repeated `set_mesh` calls on a similar mesh stop reallocating.
+pub(crate) fn rebuild_boundary_links(state: &mut SimState) {
+    state.boundary_cells.clear();
+    state.boundary_masks.clear();
+    state.boundary_grid_len = 0;
+    let (nx, ny, nz) = (state.nx, state.ny, state.nz);
+    let n = nx * ny * nz;
+    if n == 0 || state.occupancy.len() != n || n > u32::MAX as usize {
+        return;
+    }
+    state.boundary_grid_len = n;
+    // All-fluid fast path: nothing can reflect, so skip the neighbour scan.
+    if !state.occupancy.iter().any(|&o| o != 0) {
+        return;
+    }
+    let nx_i = nx as i32;
+    let ny_i = ny as i32;
+    let nz_i = nz as i32;
+    for z in 0..nz {
+        for y in 0..ny {
+            for x in 0..nx {
+                let c = idx(x, y, z, nx, ny);
+                if state.occupancy[c] != 0 {
+                    continue;
+                }
+                let mut mask = 0u32;
+                for i in 1..19 {
+                    let sx = x as i32 + EX[i];
+                    let sy = y as i32 + EY[i];
+                    let sz = z as i32 + EZ[i];
+                    if sx < 0 || sx >= nx_i || sy < 0 || sy >= ny_i || sz < 0 || sz >= nz_i {
+                        continue; // out-of-bounds neighbours are not solid
+                    }
+                    let nb = idx(sx as usize, sy as usize, sz as usize, nx, ny);
+                    if state.occupancy[nb] != 0 {
+                        mask |= 1u32 << i;
+                    }
+                }
+                if mask != 0 {
+                    state.boundary_cells.push(c as u32);
+                    state.boundary_masks.push(mask);
+                }
+            }
+        }
+    }
+}
+
+/// Fluid-side full-way bounce-back (see module docs). Walks the precomputed
+/// link list only — solid cells and interior fluid never appear in it, and
 /// out-of-bounds neighbors are not solid (walls handle the domain edge).
-/// No allocation: two small stack arrays per solid-adjacent fluid cell only.
+/// No allocation: one small stack array per solid-adjacent fluid cell.
 ///
 /// F013 drag hook: returns the per-step lattice drag force `F_lat` — the
 /// x-momentum exchange summed over every reflecting link,
@@ -118,65 +218,41 @@ fn state_ok(state: &SimState) -> Option<usize> {
 /// branch-free inside the link loop (the `e_x == 0` links contribute exactly
 /// 0 via the multiply). Non-finite populations propagate into the sum; the
 /// EMA update in [`apply_all`] guards against poisoning.
+///
+/// Defensive: returns 0 on a degenerate state, and also when the link list was
+/// built for a different cell count (a missed rebuild hook — see module docs);
+/// skipping is safer than reflecting through indices that no longer mean what
+/// they meant when the list was built.
 pub(crate) fn apply_obstacle_bounce_back(state: &mut SimState) -> f64 {
     let n = match state_ok(state) {
         Some(n) => n,
         None => return 0.0,
     };
-    let (nx, ny, nz) = (state.nx, state.ny, state.nz);
-    let nx_i = nx as i32;
-    let ny_i = ny as i32;
-    let nz_i = nz as i32;
+    if state.boundary_grid_len != n || state.boundary_cells.len() != state.boundary_masks.len() {
+        return 0.0;
+    }
     let mut drag_lat_step = 0.0f64;
-    for z in 0..nz {
-        for y in 0..ny {
-            for x in 0..nx {
-                let c = idx(x, y, z, nx, ny);
-                if state.occupancy[c] != 0 {
-                    continue;
-                }
-                // Fast path: any solid neighbour?
-                let mut adjacent = false;
-                for i in 1..19 {
-                    let sx = x as i32 + EX[i];
-                    let sy = y as i32 + EY[i];
-                    let sz = z as i32 + EZ[i];
-                    if sx < 0 || sx >= nx_i || sy < 0 || sy >= ny_i || sz < 0 || sz >= nz_i {
-                        continue;
-                    }
-                    // SAFETY-free index: bounds checked above.
-                    let nb = idx(sx as usize, sy as usize, sz as usize, nx, ny);
-                    if state.occupancy[nb] != 0 {
-                        adjacent = true;
-                        break;
-                    }
-                }
-                if !adjacent {
-                    continue;
-                }
-                let mut snap = [0f32; 19];
-                for i in 0..19 {
-                    snap[i] = state.f[i * n + c];
-                }
-                for i in 1..19 {
-                    let sx = x as i32 + EX[i];
-                    let sy = y as i32 + EY[i];
-                    let sz = z as i32 + EZ[i];
-                    if sx < 0 || sx >= nx_i || sy < 0 || sy >= ny_i || sz < 0 || sz >= nz_i {
-                        continue;
-                    }
-                    let nb = idx(sx as usize, sy as usize, sz as usize, nx, ny);
-                    if state.occupancy[nb] != 0 {
-                        let r = REVERSE[i];
-                        // F013: x-momentum exchange for this reflecting link,
-                        // from the pre-bounce snapshot. Branch-free: links
-                        // with `e_x == 0` contribute exactly 0.
-                        drag_lat_step +=
-                            (snap[i] as f64 + snap[r] as f64) * EX[i] as f64;
-                        state.f[r * n + c] = snap[i];
-                    }
-                }
-            }
+    for k in 0..state.boundary_cells.len() {
+        let c = state.boundary_cells[k] as usize;
+        let mut mask = state.boundary_masks[k];
+        if c >= n {
+            continue; // unreachable given the rebuild invariants
+        }
+        let mut snap = [0f32; 19];
+        for i in 0..19 {
+            snap[i] = state.f[i * n + c];
+        }
+        // Low-to-high bit walk == ascending direction index == the historical
+        // `for i in 1..19` visit order (drag summation order is preserved).
+        while mask != 0 {
+            let i = mask.trailing_zeros() as usize;
+            mask &= mask - 1;
+            let r = REVERSE[i];
+            // F013: x-momentum exchange for this reflecting link, from the
+            // pre-bounce snapshot. Branch-free: links with `e_x == 0`
+            // contribute exactly 0.
+            drag_lat_step += (snap[i] as f64 + snap[r] as f64) * EX[i] as f64;
+            state.f[r * n + c] = snap[i];
         }
     }
     drag_lat_step
@@ -409,6 +485,72 @@ mod tests {
             cz - h,
             cz + h,
         );
+    }
+
+    /// Brute-force reference for the precomputed link list: the full-grid
+    /// scan the per-step pass used to do, in the same `z → y → x` order.
+    fn reference_links(s: &SimState) -> Vec<(u32, u32)> {
+        let (nx, ny, nz) = (s.nx, s.ny, s.nz);
+        let (nx_i, ny_i, nz_i) = (nx as i32, ny as i32, nz as i32);
+        let mut out = Vec::new();
+        for z in 0..nz {
+            for y in 0..ny {
+                for x in 0..nx {
+                    let c = idx(x, y, z, nx, ny);
+                    if s.occupancy[c] != 0 {
+                        continue;
+                    }
+                    let mut mask = 0u32;
+                    for i in 1..19 {
+                        let (sx, sy, sz) =
+                            (x as i32 + EX[i], y as i32 + EY[i], z as i32 + EZ[i]);
+                        if sx < 0 || sx >= nx_i || sy < 0 || sy >= ny_i || sz < 0 || sz >= nz_i {
+                            continue;
+                        }
+                        if s.occupancy[idx(sx as usize, sy as usize, sz as usize, nx, ny)] != 0 {
+                            mask |= 1u32 << i;
+                        }
+                    }
+                    if mask != 0 {
+                        out.push((c as u32, mask));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn boundary_links_match_full_scan() {
+        // Fresh (all-fluid) state: empty list, but sized for the grid.
+        let mut s = test_state(16, 8, 8, 0.05, 0.56);
+        assert_eq!(s.boundary_grid_len, 16 * 8 * 8);
+        assert!(
+            s.boundary_cells.is_empty() && s.boundary_masks.is_empty(),
+            "an all-fluid grid must carry no boundary links"
+        );
+        // With a solid box the list must reproduce the full-grid scan exactly
+        // (same entries, same order) — that ordering is what makes the drag
+        // sum bit-identical to the pre-precomputation implementation.
+        place_box(&mut s, 6, 10, 2, 6, 2, 6);
+        let want = reference_links(&s);
+        assert!(!want.is_empty(), "box must expose boundary links");
+        let got: Vec<(u32, u32)> = s
+            .boundary_cells
+            .iter()
+            .copied()
+            .zip(s.boundary_masks.iter().copied())
+            .collect();
+        assert_eq!(got, want, "precomputed links diverge from the full scan");
+        // Every entry is a fluid cell with at least one solid link.
+        for &(c, mask) in got.iter() {
+            assert_eq!(s.occupancy[c as usize], 0, "cell {c} is solid");
+            assert_ne!(mask, 0, "cell {c} carries an empty mask");
+            assert_eq!(mask & 1, 0, "rest direction must never be a link");
+        }
+        // A field reset keeps the list (occupancy is untouched).
+        reset_state_flow(&mut s);
+        assert_eq!(s.boundary_cells.len(), want.len());
     }
 
     #[test]

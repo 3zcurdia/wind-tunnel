@@ -112,6 +112,21 @@ pub struct SimState {
     /// EMA-smoothed (α = 0.05) per-step lattice drag force from the
     /// bounce-back momentum-exchange hook (see `stats.rs`).
     pub(crate) drag_lat_ema: f64,
+    // ── Precomputed obstacle boundary links (perf, see `boundaries.rs`) ──
+    /// Cell indices of every fluid cell with at least one in-bounds solid
+    /// neighbour, in the canonical `z → y → x` scan order. Parallel to
+    /// [`Self::boundary_masks`]; rebuilt only when `occupancy` changes
+    /// (`boundaries::rebuild_boundary_links`), never per step. Empty when the
+    /// grid holds no solids — the fresh / cleared-mesh default.
+    pub(crate) boundary_cells: Vec<u32>,
+    /// Per-entry bitmask of the directions `i ∈ 1..19` whose neighbour
+    /// `c + e[i]` is in-bounds **and** solid (bit `i` set). Same length and
+    /// order as [`Self::boundary_cells`]; every mask is non-zero.
+    pub(crate) boundary_masks: Vec<u32>,
+    /// Cell count (`nx·ny·nz`) the link list was built for. The per-step
+    /// bounce-back compares it against the live grid size and degrades to a
+    /// no-op on a mismatch (a stale list can only mean a missed rebuild hook).
+    pub(crate) boundary_grid_len: usize,
 }
 
 impl SimState {
@@ -151,6 +166,9 @@ impl SimState {
             q_ref_pa: 0.0,
             frontal_cells: 0,
             drag_lat_ema: 0.0,
+            boundary_cells: Vec::new(),
+            boundary_masks: Vec::new(),
+            boundary_grid_len: 0,
         }
     }
 
@@ -192,6 +210,9 @@ impl SimState {
             q_ref_pa: 0.0,
             frontal_cells: 0,
             drag_lat_ema: 0.0,
+            boundary_cells: Vec::new(),
+            boundary_masks: Vec::new(),
+            boundary_grid_len: 0,
         };
         lbm::reset_state_flow(&mut s);
         s
@@ -207,12 +228,6 @@ impl SimState {
 
 thread_local! {
     static STATE: RefCell<SimState> = RefCell::new(SimState::empty());
-}
-
-/// Temporary pipeline probe (F003). Removed with F019.
-#[wasm_bindgen]
-pub fn ping() -> String {
-    "pong".to_string()
 }
 
 /// Allocate domain & solver state. Safe to call again to rebuild (resets
@@ -545,7 +560,7 @@ pub fn timing() -> Timing {
 // resolution. wasm32-unknown-unknown: std's clock traps at runtime
 // (`unreachable`, verified 2026-09-08 with a wasm-pack/Node probe — the
 // spec's "verified in F003's toolchain" assumption was wrong; F003 only ever
-// called `ping()`), so the browser path imports the monotonic
+// called a trivial string probe), so the browser path imports the monotonic
 // `performance.now()` host function through the existing `wasm-bindgen`
 // dependency instead: no new crates (the spec's Dependencies say "none", and
 // `wasm/Cargo.toml` is outside this feature's file list), and monotonicity

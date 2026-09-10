@@ -206,7 +206,7 @@ describe("isQualityLevel validation", () => {
   });
 });
 
-describe("probe thresholds (F021 §1: avg×8 > 12 ms → Low else Medium)", () => {
+describe("probe thresholds (F021 §1: last×8 > 12 ms → Low else Medium)", () => {
   it("picks Medium at the exact 12 ms boundary (strict `>`)", () => {
     // 1.5 ms × 8 = 12 ms exactly — not greater, so Medium.
     assert.strictEqual(probeQuality(1.5), "medium");

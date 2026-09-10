@@ -1035,3 +1035,50 @@ fixture point (5000-step healthy run). Kept regression:
 1500 steps, Low grid). Updated the two tests pinning τ = 0.505
 (`units.rs` ×2, `lib.rs` ×1) and the ControlPanel assist banner copy;
 `stats.rs` fixtures pin (u, τ) directly and are unaffected.
+
+---
+
+## 2026-09-09 — Precomputed obstacle boundary links (bounce-back perf)
+
+**Problem.** `boundaries::apply_obstacle_bounce_back` rediscovered the
+reflecting-link set on every step: for each of the ~295k cells of the High
+grid it probed up to 18 neighbours before deciding whether to do anything.
+That is ~5M branchy, cache-hostile occupancy loads per step — comparable to
+the collide pass — for a set that is a pure function of `occupancy` and
+therefore constant between mesh changes.
+
+**Change** (`wasm/src/boundaries.rs`, `wasm/src/lbm.rs`, `wasm/src/lib.rs`).
+`SimState` gained a struct-of-two-vecs link list plus a staleness stamp:
+`boundary_cells: Vec<u32>` (solid-adjacent fluid cell indices, canonical
+`z → y → x` scan order), `boundary_masks: Vec<u32>` (bit `i ∈ 1..19` set iff
+neighbour `c + e[i]` is in-bounds and solid; never zero), and
+`boundary_grid_len` (the `nx·ny·nz` the list was built for). The new
+`boundaries::rebuild_boundary_links` fills it with one occupancy scan; the
+per-step pass walks only the list, iterating each mask's bits low-to-high.
+No ABI change, no new exports.
+
+**Result parity.** Low-to-high bit iteration visits directions in ascending
+index order — the historical `for i in 1..19` order — and the entries are in
+the old full-grid scan order, so both the reflections and the `f64` drag
+accumulation (`Σ (f[i] + f[rev(i)])·e_x[i]`, summed left to right) are
+bit-identical to the previous implementation. The per-step pass still
+allocates nothing (one 19-float stack snapshot per boundary cell); only the
+mesh-time rebuild allocates, and it reuses the vectors' capacity.
+
+**Rebuild hooks.** The invariant is "occupancy never changes without a
+rebuild". Both occupancy funnels in `lbm.rs` end with the rebuild:
+`retune_solid_cells` (`set_mesh`, `clear_mesh`, and the `place_box` fixtures
+in `boundaries.rs` / `lbm.rs` / `particles.rs` / `advection.rs` / `bench.rs` /
+`lib.rs`) and `reset_state_flow` (`init_sim`/`SimState::fresh`, `reset_flow`,
+and the analytic-occupancy fixtures in `pressure.rs` and `stats.rs`, which
+paint occupancy and then reset the field *without* retuning). A fresh
+all-fluid state ends with an empty list, so bounce-back stays a no-op.
+Belt-and-braces: the per-step pass no-ops when `boundary_grid_len` disagrees
+with the live cell count.
+
+**Coverage.** New `boundary_links_match_full_scan` asserts the list equals a
+brute-force full-grid scan entry-for-entry and in order (this is what pins
+the drag-sum parity), plus the empty-on-fresh default. The existing physics
+suite is the behavioural regression net: `no_flow_through_solid`,
+`wake_exists_downstream_of_cube`, `steady_state_reached`,
+`sphere_cd_order_of_magnitude` (drag EMA envelope), `healthy_run_stays_stable`.

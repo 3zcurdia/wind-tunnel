@@ -581,9 +581,9 @@ export class SceneManager {
   }
 
   /**
-   * Toggle the debug voxel cloud (F006; the F020 Layers toggle drives this).
-   * Note: nothing feeds `updateVoxelDebug` in v1, so the cloud stays empty —
-   * see DECISIONS.md §F020.2.
+   * Toggle the debug voxel cloud (F006). Currently unwired: no UI drives this
+   * and nothing feeds `updateVoxelDebug`, so the cloud stays empty — the
+   * plumbing is kept for a future occupancy feed.
    */
   setVoxelDebugVisible(on: boolean): void {
     this.voxelVisible = on;

@@ -50,7 +50,7 @@ function StatCell({
  * SSR-safe: renders placeholders until the first client-side poll resolves.
  */
 export function StatsPanel() {
-  const { readout } = useSimulationContext();
+  const { readout, conditionsUnstable } = useSimulationContext();
 
   // Empty state (spec §4): no model or no run yet → every metric "—" except
   // the grid dims (from DOMAIN) and a gray STABLE badge.
@@ -90,9 +90,9 @@ export function StatsPanel() {
         title="Lattice steps computed per second (FPS × steps-per-frame)"
       />
       <StatCell
-        label="Cd"
+        label="Cd (confined)"
         value={empty ? READOUT_PLACEHOLDER : formatCd(readout.cd)}
-        title="Drag coefficient — shows — until 200+ steps have elapsed (F013 sentinel)"
+        title="Relative drag in a confined coarse-grid tunnel — compare shapes, not textbook values. Blockage, voxelized surfaces and bounce-back walls push it several times above literature Cd. Shows — until 200+ steps have elapsed (F013 sentinel)."
       />
       <StatCell
         label="Drag"
@@ -122,9 +122,13 @@ export function StatsPanel() {
         title={`Maximum surface pressure (stagnation reference q ≈ ${formatKPa(readout?.qRefPa ?? Number.NaN)} kPa)`}
       />
       <StatCell
-        label="Re"
+        label="Re (nominal)"
         value={empty ? READOUT_PLACEHOLDER : formatRe(readout.re)}
-        title="Reynolds number U·L/ν from the current physical conditions"
+        title={
+          conditionsUnstable
+            ? "Nominal Reynolds number U·L/ν from the physical conditions. Stability assist is active, so the solver runs on assist viscosity — the effective simulated Re is far lower (laminar regime)."
+            : "Nominal Reynolds number U·L/ν from the current physical conditions — the lattice may resolve a lower effective Re."
+        }
       />
       <StatCell
         label="Grid"
