@@ -6,6 +6,23 @@ stay consistent with `ARCHITECTURE.md`.
 
 ---
 
+## 2026-09-10 — F027 (plain-language pass)
+
+1. **Acceptance sweep `grep -r "Domain box" src/` vs file-list discipline.**
+   After the sanctioned `LayersSection` label rename, the literal sweep still
+   hit one match: a doc comment on the `domainBoxVisible` state field in
+   `src/lib/sim/SimulationContext.tsx` (outside F027's file list). The
+   identifier itself (`domainBoxVisible` / `setDomainBoxVisible`,
+   `SceneManager.setDomainBoxVisible`, `id="layer-domain-box"`) is F020 API
+   contract and stays — renaming it would break the contract for zero
+   user-visible gain. Smallest consistent change (F019 comment-only-touch-up
+   precedent): reworded the comment to "Tunnel-bounds layer
+   (`domainBoxVisible` state) + ground grid + inlet marker" — no code change,
+   sweep now empty. Remaining lowercase "domain box" strings are `SceneManager`
+   internals/comments, not user-facing copy.
+
+---
+
 ## 2026-09-08 — F020 (viewport polish)
 
 1. **Front-preset axis: spec §1 contradicts its own acceptance criterion.**

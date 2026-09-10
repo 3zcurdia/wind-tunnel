@@ -9,7 +9,7 @@
 | Size | S |
 | Skill fit | `UI` |
 | Depends on | F018, F022 (warning surfaces exist); composes with F025/F026 but does not require them |
-| Status | `[ ]` todo |
+| Status | `[x]` done (2026-09-10; code + `node --test`/lint/build verified, 2 live-browser criteria noted below) |
 
 ## Goal
 
@@ -104,14 +104,17 @@ src/components/controls/StatsPanel.tsx     (modify) — two tooltip strings
 
 ## Acceptance criteria
 
-- [ ] At defaults the wind-speed sublabel reads `54 km/h — highway speed is
+- [x] At defaults the wind-speed sublabel reads `54 km/h — highway speed is
       ≈ 100 km/h` and the pressure sublabel starts with `sea level`.
-- [ ] Pressure at 80.0 kPa → sublabel starts with `≈ 1,900 m altitude`;
+- [x] Pressure at 80.0 kPa → sublabel starts with `≈ 1,900 m altitude`;
       at 50.0 kPa → `≈ 5,600 m altitude`.
 - [ ] Driving 60 m/s + min viscosity shows the new amber copy verbatim.
+      (2026-09-10: copy verified verbatim in source — JSX whitespace collapses
+      to the exact spec sentence; live trigger needs a browser + wasm run.)
 - [ ] The layers list shows "Tunnel bounds"; the run/pause section is titled
-      "Playback"; both still function.
-- [ ] `node --test`, lint, build all clean; `grep -r "Domain box" src/` empty.
+      "Playback"; both still function. (2026-09-10: labels verified in source
+      + `grep "Domain box"` empty; click-function needs a browser.)
+- [x] `node --test`, lint, build all clean; `grep -r "Domain box" src/` empty.
 
 ## Test plan
 

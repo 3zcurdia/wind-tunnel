@@ -14,6 +14,8 @@ export interface SliderProps {
   /** Grays the control (F018: sliders stay disabled until a model is loaded). */
   readonly disabled?: boolean;
   readonly id?: string;
+  /** Plain-language companion line under the slider (F027). */
+  readonly sublabel?: string;
 }
 
 /**
@@ -36,6 +38,7 @@ export function Slider({
   format,
   disabled = false,
   id,
+  sublabel,
 }: SliderProps) {
   const autoId = useId();
   const inputId = id ?? autoId;
@@ -70,6 +73,9 @@ export function Slider({
         disabled={disabled}
         className="w-full accent-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
       />
+      {sublabel !== undefined ? (
+        <p className="mt-0.5 text-[10px] text-neutral-500">{sublabel}</p>
+      ) : null}
     </div>
   );
 }

@@ -16,6 +16,8 @@ import {
   VISCOSITY_COEF_RANGE,
   WIND_SPEED_RANGE,
   derivedValues,
+  formatAltitude,
+  formatKmh,
   viscosityCoefToPas,
   viscosityPasToCoef,
   type FlowConditions,
@@ -166,7 +168,7 @@ function LayersSection() {
       />
       <LayerToggle
         id="layer-domain-box"
-        label="Domain box"
+        label="Tunnel bounds"
         checked={domainBoxVisible}
         onChange={setDomainBoxVisible}
       />
@@ -261,6 +263,7 @@ export function ControlPanel({
                 }}
                 unit="m/s"
                 format={(v) => v.toFixed(1)}
+                sublabel={`${formatKmh(conditions.uMps)} — highway speed is ≈ 100 km/h`}
               />
               <Slider
                 label="Air pressure"
@@ -273,6 +276,7 @@ export function ControlPanel({
                 }}
                 unit="kPa"
                 format={(v) => v.toFixed(1)}
+                sublabel={`${formatAltitude(conditions.pressureKpa)} — thinner air pushes less`}
               />
               <Slider
                 label="Dynamic viscosity"
@@ -288,6 +292,7 @@ export function ControlPanel({
                 }}
                 unit="×10⁻⁵ Pa·s"
                 format={(v) => v.toFixed(2)}
+                sublabel="How “sticky” the air is — honey would be far off this scale"
               />
             </div>
           </section>
@@ -317,9 +322,10 @@ export function ControlPanel({
             </div>
             {conditionsUnstable ? (
               <p className="mt-2 rounded-md border border-amber-800 bg-amber-950 px-2 py-1 text-[11px] text-amber-300">
-                Stability assist active — real-air viscosity cannot reach a
-                stable τ at this grid, so the solver runs on assist viscosity.
-                Flow stays visual; effective Re is lower than shown.
+                Heads up: these settings are past what this tunnel can compute
+                exactly, so it&apos;s running a smoothed approximation. The
+                flow pattern is still representative, but the Re number reads
+                higher than what is simulated.
               </p>
             ) : null}
           </section>
@@ -335,7 +341,7 @@ export function ControlPanel({
         <LayersSection />
       </fieldset>
       <section className="mt-5">
-        <SectionTitle>Transport</SectionTitle>
+        <SectionTitle>Playback</SectionTitle>
         <button
           type="button"
           onClick={transport.toggleRun}

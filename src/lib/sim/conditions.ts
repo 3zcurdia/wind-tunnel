@@ -119,6 +119,24 @@ export function viscosityPasToCoef(pas: number): number {
   return pas * 1e5;
 }
 
+/** 15 → "54 km/h" (round to integer). */
+export function formatKmh(uMps: number): string {
+  return `${Math.round(uMps * 3.6)} km/h`;
+}
+
+/**
+ * ISA altitude from station pressure: h = 44330·(1 − (kPa/101.325)^0.1903),
+ * clamped to ≥ 0, rounded to the nearest 100 m.
+ * 101.3 → "sea level"; otherwise "≈ 1,900 m altitude" (en-US grouping).
+ * Returns "sea level" whenever the computed altitude rounds to 0 m.
+ */
+export function formatAltitude(pressureKpa: number): string {
+  const h = 44330 * (1 - Math.pow(pressureKpa / 101.325, 0.1903));
+  const rounded = Math.round(Math.max(0, h) / 100) * 100;
+  if (rounded === 0) return "sea level";
+  return `≈ ${rounded.toLocaleString("en-US")} m altitude`;
+}
+
 /**
  * One-click real-world scenario (F026 §1).
  *

@@ -130,7 +130,7 @@ export interface SimulationContextValue {
    */
   readonly particlesVisible: boolean;
   setParticlesVisible(on: boolean): void;
-  /** Domain box + ground grid + inlet marker. */
+  /** Tunnel-bounds layer (`domainBoxVisible` state) + ground grid + inlet marker. */
   readonly domainBoxVisible: boolean;
   setDomainBoxVisible(on: boolean): void;
   /** Engine access for the frame loop (`useSimulation`, F019). Stable. */

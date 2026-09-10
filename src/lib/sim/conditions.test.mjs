@@ -36,6 +36,8 @@ import {
   WIND_SPEED_RANGE,
   derivedValues,
   matchPreset,
+  formatAltitude,
+  formatKmh,
   viscosityCoefToPas,
   viscosityPasToCoef,
 } from "./conditions.ts";
@@ -180,6 +182,32 @@ function assertOnGrid(value, range, label) {
     `${label}: ${value} is not on the ${range.step} grid from ${range.min}`,
   );
 }
+
+describe("formatKmh + formatAltitude (F027)", () => {
+  it('formatKmh(15) === "54 km/h"', () => {
+    assert.strictEqual(formatKmh(15), "54 km/h");
+  });
+
+  it('formatKmh(60) === "216 km/h"', () => {
+    assert.strictEqual(formatKmh(60), "216 km/h");
+  });
+
+  it('formatAltitude(101.3) === "sea level"', () => {
+    assert.strictEqual(formatAltitude(101.3), "sea level");
+  });
+
+  it('formatAltitude(80) === "≈ 1,900 m altitude"', () => {
+    assert.strictEqual(formatAltitude(80), "≈ 1,900 m altitude");
+  });
+
+  it('formatAltitude(50) === "≈ 5,600 m altitude"', () => {
+    assert.strictEqual(formatAltitude(50), "≈ 5,600 m altitude");
+  });
+
+  it('formatAltitude(110) === "sea level" (negative altitude clamps to 0)', () => {
+    assert.strictEqual(formatAltitude(110), "sea level");
+  });
+});
 
 describe("FLOW_PRESETS + matchPreset (F026)", () => {
   it("pins the spec's literal preset values", () => {

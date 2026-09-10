@@ -92,7 +92,7 @@ export function StatsPanel() {
       <StatCell
         label="Cd (confined)"
         value={empty ? READOUT_PLACEHOLDER : formatCd(readout.cd)}
-        title="Relative drag in a confined coarse-grid tunnel — compare shapes, not textbook values. Blockage, voxelized surfaces and bounce-back walls push it several times above literature Cd. Shows — until 200+ steps have elapsed (F013 sentinel)."
+        title="Drag score for comparing shapes in this tunnel — lower is sleeker. Not comparable to textbook Cd values (walls and coarse grid inflate it)."
       />
       <StatCell
         label="Drag"
@@ -158,7 +158,7 @@ export function StatsPanel() {
           </span>
         ) : (
           <span
-            title="Solver unstable: NaN or negative density detected — recover via reset (F019 auto-recovers)"
+            title="The math diverged — the app resets the flow automatically."
             className="animate-pulse rounded-full border border-red-800 bg-red-950 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-red-400"
           >
             Unstable

@@ -92,7 +92,7 @@ const BLOWUP_WINDOW_MS = 30000;
 
 /** Persistent banner text for the double-blowup latch (F022 §3, ≤ 90 chars). */
 export const UNSTABLE_LOCK_MESSAGE =
-  "Simulation unstable — reduce wind speed or change model";
+  "The simulation blew up — extreme settings can do that. Press Reset to calm the air and try gentler values.";
 
 /**
  * One instability incident, kept for deluxe console diagnostics + devtools.
